@@ -1,0 +1,314 @@
+From c8e9beae8dd1e878097ce77e31dbfff85bd1fc72 Mon Sep 17 00:00:00 2001
+From: local <local@localhost>
+Date: Fri, 2 Oct 2026 15:08:45 +0800
+Subject: [PATCH] LOCAL: --stage-weights for a multi-GPU layer split
+
+Port of spideytznn/Strata's stage-owned dense weights onto v0.1.34.
+With an explicit --layer-split K, each stage loads only the dense weights
+of the layers it runs (global tensors kept).  Upstream v0.1.34 gives every
+later stage a full copy; this frees that VRAM for the expert cache.
+
+- include/strata/core/weight_stage.hpp: the layer-range matcher
+- weights.hpp/.cpp: pool_bytes/load take a WeightStage filter; skipped
+  rows keep metadata with stage_resident=false
+- native_dense.cpp: skip tensors owned by another stage
+- verify.cpp/prefill.cpp: explicit error when a stage reads another
+  stage's tensor
+- generate.cpp: --stage-weights option, validation (native --serve,
+  --spec>=2, explicit split), per-stage arena sizing and loading
+
+Measured on 2x RTX 2080 Ti 22G (Swift IQ3_XXS, 262144 ctx, kv-resident):
+CUDA1 free VRAM 13.7 -> 19.4 GiB, resident experts 19036 -> 21141.
+---
+ include/strata/core/weight_stage.hpp | 21 +++++++++++++
+ include/strata/core/weights.hpp      |  7 +++--
+ src/core/native_dense.cpp            |  1 +
+ src/core/verify.cpp                  |  1 +
+ src/core/weights.cpp                 | 17 +++++-----
+ src/prefill/prefill.cpp              |  1 +
+ src/program/generate.cpp             | 47 +++++++++++++++++++++++++---
+ 7 files changed, 82 insertions(+), 13 deletions(-)
+ create mode 100644 include/strata/core/weight_stage.hpp
+
+diff --git a/include/strata/core/weight_stage.hpp b/include/strata/core/weight_stage.hpp
+new file mode 100644
+index 0000000..ee191c5
+--- /dev/null
++++ b/include/strata/core/weight_stage.hpp
+@@ -0,0 +1,21 @@
++#pragma once
++#include <charconv>
++#include <cstdint>
++#include <string_view>
++
++namespace strata::core {
++// Global tensors are retained. A stage may omit only a well-formed blk.N tensor
++// outside its execution range; unknown names remain loaded conservatively.
++struct WeightStage {
++    int64_t begin = 0, end = 0;
++    bool owns(std::string_view name) const {
++        if (!name.starts_with("blk.")) return true;
++        const auto dot = name.find('.', 4);
++        if (dot == std::string_view::npos) return true;
++        int64_t layer = -1;
++        const auto parsed = std::from_chars(name.data() + 4, name.data() + dot, layer);
++        if (parsed.ec != std::errc{} || parsed.ptr != name.data() + dot || layer < 0) return true;
++        return begin <= layer && layer < end;
++    }
++};
++}
+diff --git a/include/strata/core/weights.hpp b/include/strata/core/weights.hpp
+index 5c6414f..b80523a 100644
+--- a/include/strata/core/weights.hpp
++++ b/include/strata/core/weights.hpp
+@@ -27,6 +27,8 @@
+ // logits.  Python wrote the manifest and already parses it correctly.
+ #pragma once
+ 
++#include "strata/core/weight_stage.hpp"
++
+ #include <cstdint>
+ #include <map>
+ #include <set>
+@@ -93,6 +95,7 @@ struct WeightRef {
+     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
+     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
+     bool resident = true;
++    bool stage_resident = true; ///< false only for layers assigned to another GPU (--stage-weights)
+ };
+ 
+ struct LoadReport {
+@@ -111,7 +114,7 @@ public:
+     /// than halfway through a 5 GB upload.
+     /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
+     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
+-                           const std::set<std::string>* skip = nullptr);
++                           const std::set<std::string>* skip = nullptr, const WeightStage* stage = nullptr);
+ 
+     /// The `code_bits` field of one row of `<pack_dir>/index.txt`, readable WITHOUT loading anything (0 = the
+     /// pack stores the tensor unquantized, e.g. a --compat-bf16 key; -1 = no such row).  #326: the loader has
+@@ -126,7 +129,7 @@ public:
+     /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
+     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
+     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
+-              const std::set<std::string>* skip = nullptr);
++              const std::set<std::string>* skip = nullptr, const WeightStage* stage = nullptr);
+ 
+     const WeightRef* find(const std::string& name) const;
+     const std::map<std::string, WeightRef>& all() const { return table_; }
+diff --git a/src/core/native_dense.cpp b/src/core/native_dense.cpp
+index 4a86d48..7e441c0 100644
+--- a/src/core/native_dense.cpp
++++ b/src/core/native_dense.cpp
+@@ -147,6 +147,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
+                     err = "native dense: tensor absent from canonical table: " + tensor.name; return false;
+                 }
+                 auto& ref = found->second;
++                if (!ref.stage_resident) continue; // keep metadata, upload only this GPU's layers
+                 if (ref.native_data) { err = "native dense: override already attached"; return false; }
+                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
+                 // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 999f85d..7446276 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -86,6 +86,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
+ 
+ const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
+     const WeightRef* r = v.get(suffix);
++    if (r && !r->stage_resident) { err = v.name(suffix) + " belongs to another GPU stage"; return nullptr; }
+     if (r == nullptr && err.empty()) err = v.name(suffix) + " is missing";
+     return r;
+ }
+diff --git a/src/core/weights.cpp b/src/core/weights.cpp
+index 8b42f84..0a07cbb 100644
+--- a/src/core/weights.cpp
++++ b/src/core/weights.cpp
+@@ -87,7 +87,7 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err,
+ }  // namespace
+ 
+ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
+-                             const std::set<std::string>* skip) {
++                             const std::set<std::string>* skip, const WeightStage* stage) {
+     const std::string path = pack_dir + "/index.txt";
+     std::FILE* f = std::fopen(path.c_str(), "rb");
+     if (!f) { err = "cannot open " + path; return false; }
+@@ -102,19 +102,19 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
+             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3) { pool = p; align = a; }
+             continue;
+         }
+-        if (skip == nullptr) continue;
++        if (skip == nullptr && stage == nullptr) continue;
+         char name[256] = {0};
+         unsigned long long dst_bytes = 0, dummy = 0;
+         int i1 = 0, i2 = 0;
+         if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
+             continue;
+-        if (skip->count(name)) continue;
++        if ((skip && skip->count(name)) || (stage && !stage->owns(name))) continue;
+         const uint64_t a = align > 0 ? (uint64_t) align : 256;
+         compact += (dst_bytes + a - 1) / a * a;
+     }
+     std::fclose(f);
+     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
+-    out = skip ? compact : pool;
++    out = (skip || stage) ? compact : pool;
+     return true;
+ }
+ 
+@@ -142,7 +142,7 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
+ }
+ 
+ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
+-                       const std::set<std::string>* skip) {
++                       const std::set<std::string>* skip, const WeightStage* stage) {
+     const std::string path = pack_dir + "/index.txt";
+     std::FILE* idx = std::fopen(path.c_str(), "rb");
+     if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
+@@ -192,11 +192,13 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
+     // alignment; skipped rows keep their metadata and get no bytes.
+     std::vector<bool> skipped(rows.size(), false);
+-    if (skip != nullptr) {
++    if (skip != nullptr || stage != nullptr) {
+         const uint64_t a = align > 0 ? (uint64_t) align : 256;
+         uint64_t at = 0;
+         for (size_t i = 0; i < rows.size(); ++i) {
+-            if (skip->count(rows[i].name)) { skipped[i] = true; continue; }
++            if ((skip && skip->count(rows[i].name)) || (stage && !stage->owns(rows[i].name))) {
++                skipped[i] = true; continue;
++            }
+             rows[i].dst_off = at;
+             at += (rows[i].dst_bytes + a - 1) / a * a;
+         }
+@@ -244,6 +246,7 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
+             WeightRef wr;
+             wr.data = nullptr;
+             wr.resident = false;
++            wr.stage_resident = !stage || stage->owns(r.name);
+             wr.bytes = r.dst_bytes;
+             wr.ne0 = r.ne0;
+             wr.ne1 = r.ne1;
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index ed47b97..918d89f 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -925,6 +925,7 @@ namespace {
+ 
+ const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::string& err) {
+     const core::WeightRef* r = v.get(suffix);
++    if (r && !r->stage_resident) { err = v.name(suffix) + " belongs to another GPU stage"; return nullptr; }
+     if (!r) err = v.name(suffix) + " is missing";
+     return r;
+ }
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index fa52c6b..9c6c2b1 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -367,6 +367,10 @@ struct Options {
+     /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
+     /// from each GPU's free VRAM); empty = one GPU
+     std::string layer_split;
++    /// --stage-weights (LOCAL): with an explicit layer split, each stage loads only the dense weights of the
++    /// layers it runs (global tensors are kept).  Upstream gives every later stage a full copy; omitting the
++    /// other stages' blk.N.* frees that VRAM for the expert cache.  Requires an explicit --layer-split K.
++    bool stage_weights = false;
+     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
+     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
+     std::string split_device;
+@@ -525,6 +529,9 @@ void usage() {
+                  "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
+                  "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
+                  "  --stats              print the per-stage breakdown\n"
++                 "  --stage-weights      LOCAL: with an explicit --layer-split K, each stage loads only its own\n"
++                 "                       layers' dense weights (globals kept) - frees the duplicate copies for the\n"
++                 "                       expert cache.  Requires native --serve and --spec >= 2.\n"
+                  "  --gpu-stages         R0.9: capture the layer as three graphs (mixer / ffn+router / post)\n"
+                  "                       and time them from OUTSIDE the capture.  The per-stage table on the\n"
+                  "                       real graph that --stage-timing cannot give.  Prints and exits.\n"
+@@ -1141,6 +1148,7 @@ int main(int argc, char** argv) {
+         else if (a == "--stop-eos") o.stop_eos = true;
+         else if (a == "--spec-split") o.spec_split = true;
+         else if (a == "--layer-split") o.layer_split = next("--layer-split");
++        else if (a == "--stage-weights") o.stage_weights = true;
+         else if (a == "--split-device") o.split_device = next("--split-device");
+         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
+         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
+@@ -1312,6 +1320,17 @@ int main(int argc, char** argv) {
+         }
+     }
+     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
++    // --stage-weights (LOCAL): the later stages' weight arenas are sized before the auto split is searched, so this
++    // needs the split points from the CLI.
++    if (o.stage_weights && (!multi_gpu || split_auto || !o.serve || o.native_preset.empty() || o.spec < 2)) {
++        std::fprintf(stderr, "strata generate: --stage-weights requires native --serve, --spec >= 2 and an explicit "
++                             "multi-GPU --layer-split (e.g. 24), not auto\n");
++        return 2;
++    }
++    if (o.stage_weights && (o.gpu_only_full || o.graph_only || o.gpu_stages)) {
++        std::fprintf(stderr, "strata generate: --stage-weights cannot use whole-model graph diagnostics\n");
++        return 2;
++    }
+     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
+     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
+         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
+@@ -1883,7 +1902,9 @@ int main(int argc, char** argv) {
+         if (native_pack) skip.insert("token_embd.weight");
+     }
+     uint64_t pool_bytes = 0;
+-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
++    const strata::core::WeightStage main_weight_stage{0, split_at.empty() ? 0 : split_at.front()};
++    const strata::core::WeightStage* main_weight_range = o.stage_weights ? &main_weight_stage : nullptr;
++    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip, main_weight_range)) {
+         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+         return 1;
+     }
+@@ -1894,10 +1915,13 @@ int main(int argc, char** argv) {
+         return 1;
+     }
+     strata::core::WeightTable wt;
+-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
++    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip, main_weight_range)) {
+         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+         return 1;
+     }
++    if (o.stage_weights)
++        std::fprintf(stderr, "strata generate: --stage-weights: CUDA0 loads layers 0-%lld only (%.2f MiB)\n",
++                     (long long) (main_weight_stage.end - 1), (double) pool_bytes / 1048576.0);
+     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s (%zu canonical tensors skipped: "
+                          "served natively)\n",
+                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), skip.size());
+@@ -2192,13 +2216,28 @@ int main(int argc, char** argv) {
+             return 1;
+         }
+         const strata::core::OnDevice on(st.dev);
++        const bool last = i + 1 == split_devs.size();
++        const strata::core::WeightStage stage_range{
++            o.stage_weights ? split_at[i] : 0,
++            o.stage_weights && !last ? split_at[i + 1] : g.n_layers};
++        const strata::core::WeightStage* weight_range = o.stage_weights ? &stage_range : nullptr;
++        uint64_t stage_pool_bytes = pool_bytes;
++        if (o.stage_weights &&
++            !strata::core::WeightTable::pool_bytes(o.pack, stage_pool_bytes, err, skip.empty() ? nullptr : &skip, weight_range)) {
++            std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev, err.c_str());
++            return 1;
++        }
+         void* arena_s = nullptr;
+-        if (cudaMalloc(&arena_s, pool_bytes) != cudaSuccess ||
+-            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
++        if (cudaMalloc(&arena_s, stage_pool_bytes) != cudaSuccess ||
++            !st.wt.load(o.pack, arena_s, stage_pool_bytes, err, skip.empty() ? nullptr : &skip, weight_range)) {
+             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev,
+                          err.empty() ? "the weight arena does not fit" : err.c_str());
+             return 1;
+         }
++        if (o.stage_weights)
++            std::fprintf(stderr, "strata generate: --stage-weights: CUDA%d loads layers %lld-%lld only (%.2f MiB)\n",
++                         st.dev, (long long) stage_range.begin, (long long) (stage_range.end - 1),
++                         (double) stage_pool_bytes / 1048576.0);
+         if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
+             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
+                          err.c_str());
+-- 
+2.53.0
+
