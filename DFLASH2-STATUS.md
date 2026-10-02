@@ -1,6 +1,6 @@
 # DFlash2 现状与可行性（Qwen3.8-Flash-Next on Strata）
 
-> 记录时间：2026-10-02。用于跟踪上游进度、判断对 `~/strata-v0134`（双 2080 Ti 22G）
+> 记录时间：2026-10-02。用于跟踪上游进度、判断对 `~/strata`（双 2080 Ti 22G）
 > 是否有意义。**结论：上游有计划，但处在最早的 RFC/可行性阶段；模型侧缺 Flash-Next 的
 > DFlash2 草稿 checkpoint，是最大 blocker。**
 

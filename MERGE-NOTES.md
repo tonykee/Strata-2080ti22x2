@@ -1,6 +1,6 @@
 # 合并与同步说明（`--stage-weights` 移植到 v0.1.34）
 
-> 本文件说明 `~/strata-v0134` 相对上游 `Niko1221/Strata` 做了什么改动、改动在哪、
+> 本文件说明 `~/strata` 相对上游 `Niko1221/Strata` 做了什么改动、改动在哪、
 > 以及**主版本更新时如何把这套填充优化重新同步进来**。
 > 运行/实测数据/回退见同目录 [`PREFILL-PORT.md`](PREFILL-PORT.md)。
 
@@ -26,7 +26,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 补丁文件 | `local-patches/0001-LOCAL-stage-weights-...patch`；`local-patches/0001-LOCAL-setup-pin-gcc-13-...patch` |
 | 构建 | CUDA 12.8 / gcc-13 / sm_75，见 §6 |
 
-> 上游 remote 已在 `~/strata`（Niko1221/Strata）。worktree `~/strata-v0134`
+> 上游 remote 已在 `~/strata`（Niko1221/Strata）。worktree `~/strata`
 > 与主仓库共享 git 对象，`origin` 可直接 `git fetch`。
 
 ---
@@ -89,7 +89,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 ### 方式 A：rebase（推荐，改动是一个提交）
 
 ```sh
-cd ~/strata-v0134
+cd ~/strata
 git fetch origin
 git checkout port-v0134
 git rebase origin/main          # 把 c8e9bea / 848322b 重放到新上游
@@ -101,7 +101,7 @@ cp -f build/strata engine/strata
 ### 方式 B：补丁重放（当分支历史乱了）
 
 ```sh
-cd ~/strata-v0134
+cd ~/strata
 git fetch origin
 git checkout -B port-v0134 origin/main
 git am local-patches/0001-LOCAL-stage-weights-for-a-multi-GPU-layer-split.patch
@@ -123,7 +123,7 @@ cmake --build build --target strata -j16 && cp -f build/strata engine/strata
 ### 同步后必须验证（两条日志）
 
 ```sh
-cd ~/strata-v0134 && ./start_iq3.sh        # 端口 8000
+cd ~/strata && ./start_iq3.sh        # 端口 8000
 grep -E "stage-weights: CUDA[01] loads layers" strata-swift-iq3_xxs.log
 # 期望：
 #   strata generate: --stage-weights: CUDA0 loads layers 0-23 only (771.01 MiB)
@@ -155,7 +155,7 @@ grep -E "stage-weights: CUDA[01] loads layers" strata-swift-iq3_xxs.log
 ## 6. 编译
 
 ```sh
-cd ~/strata-v0134
+cd ~/strata
 cmake -G Ninja -S . -B build -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
@@ -194,5 +194,7 @@ Swift IQ3_XXS，256K，kv-resident，视觉开，2× RTX 2080 Ti 22G：
 
 ## 8. 回退
 
-`--stage-weights` 默认关闭；不加就是原版 v0.1.34。整个 `~/strata`（v0.1.31）未改动，
-随时 `cd ~/strata && ./start_iq3.sh` 回到旧部署。
+`--stage-weights` 默认关闭；不加就是原版 v0.1.34。要回到旧 v0.1.31 部署：
+`cd ~/strata && git checkout main`（代码回到 v0.1.31 + gcc-13 补丁），旧引擎二进制在
+`engine-bak-0131/`；或 `git checkout port-v0134` 切回本部署。分支 `main` 与 `port-v0134`
+都保留，随时可切。

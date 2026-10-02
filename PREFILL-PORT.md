@@ -1,8 +1,8 @@
-# ~/strata-v0134 — v0.1.34 + `--stage-weights` 独立测试部署
+# ~/strata — v0.1.34 + `--stage-weights`（主部署）
 
-> 本目录是**独立**部署，不影响 `~/strata`。基于上游 `origin/main` = **v0.1.34**
-> （分支 `port-v0134`，提交 `c8e9bea` 起），本机为 2× RTX 2080 Ti 22G（sm_75）、
-> 61 GiB RAM、CUDA 12.8、gcc-13。
+> 这就是**当前的主部署**。基于上游 `origin/main` = **v0.1.34**（分支 `port-v0134`，
+> 本地补丁 `c8e9bea` 起），本机 2× RTX 2080 Ti 22G（sm_75）、61 GiB RAM、CUDA 12.8、gcc-13。
+> 旧 v0.1.31 部署已由本分支取代（旧引擎备份在 `engine-bak-0131/`，旧文件在 `old-local-backup/`）。
 
 ## 1. 这轮做了什么
 
@@ -37,7 +37,7 @@
 ## 4. 启动 / 停止
 
 ```sh
-cd ~/strata-v0134
+cd ~/strata
 ./start_iq3.sh                 # 端口 8000，配置 strata-swift-iq3_xxs.json
 # 停止
 ./stop.sh 2>/dev/null || pkill -f "[s]trata-v0134/serve/server.py"; pkill -f "[s]trata-v0134/engine/strata"
@@ -53,7 +53,7 @@ curl -s -H "Authorization: Bearer llama_local" http://127.0.0.1:8000/v1/models
 
 与旧 `~/strata` 的 Swift IQ3_XXS 配置一致，差别只有：
 
-- `exe` → `/home/likan/strata-v0134/engine/strata`，`port` → `8000`
+- `exe` → `/home/likan/strata/engine/strata`，`port` → `8000`
 - `--prefill` 由 `1024` 改为 **`auto`**（自动选块，本机 8192）
 - `layer_split` 由 `auto` 改为显式 **`24`**（`--stage-weights` 要求显式切分）
 - 新增 **`--stage-weights`**
@@ -63,7 +63,7 @@ curl -s -H "Authorization: Bearer llama_local" http://127.0.0.1:8000/v1/models
 ## 6. 重新编译
 
 ```sh
-cd ~/strata-v0134
+cd ~/strata
 cmake -G Ninja -S . -B build -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=75 \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
