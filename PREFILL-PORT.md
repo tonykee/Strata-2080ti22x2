@@ -78,3 +78,21 @@ cp -f build/strata engine/strata
 ## 7. 回退
 
 `~/strata` 完全没动，直接 `cd ~/strata && ./start_iq3.sh` 即可回到原 v0.1.31 部署。
+
+## 8. 代码/文档场景解码调优（无额外功耗/噪音）
+
+用户主场景：读代码、写文档、写代码、写游戏。实测（IQ3_XXS，160W，双卡）：
+
+| 调项 | 效果 | 备注 |
+|---|---|---|
+| `spec_min_p` 0.5 → **0.65** | +2.5%（接受率 73%→82%） | 越高越平；可请求级 `strata_tune` 覆盖 |
+| draft 词表 CJK → **en**（`data/draft_vocab_en.bin`） | 代码 +1~2%，省 ~110 MiB 显存 | 只需换 `mtp-rt/draft_vocab.bin` |
+| `--suffix-draft 8` | 写代码 +7.7%，改代码 +3.3% | `16` 反而变差 |
+| `STRATA_GR_V3=1` | +1% | Turing 两半切分修复后可用 |
+
+**固化的生产配置** `strata-swift-iq3_xxs.json` 已包含：隔离 MTP 目录 `mtp-rt/`（en 词表）、`--spec-min-p 0.65`、`--suffix-draft 8`、`env.STRATA_GR_V3=1`、`--stage-weights`、`--prefill auto`、`--layer-split 24`、端口 8000。
+
+解码参考：中文对话 50–64 tok/s、读代码改代码 ~50、从零写代码 ~44–48；prompt 读入 210 tok/s（392-token）到 1313 tok/s（49.7K）。
+
+**注意**：~50 tok/s 是这台卡在 160W 下的带宽/流水线瓶颈（GPU 仅 110–125W、两卡各约 50% 利用率、命中 99%+），软件调优空间只有个位数~十来个百分比，不要期待 2x。
+
