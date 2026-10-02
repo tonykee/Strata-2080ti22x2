@@ -22,8 +22,8 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 上游 | `https://github.com/Niko1221/Strata` |
 | 基线提交 | `origin/main` = **v0.1.34**（`1678de3`） |
 | 本仓库分支 | `port-v0134` |
-| 本地提交 | **`c8e9bea`** `LOCAL: --stage-weights for a multi-GPU layer split` |
-| 补丁文件 | `local-patches/0001-LOCAL-stage-weights-for-a-multi-GPU-layer-split.patch` |
+| 本地提交 | **`c8e9bea`** `LOCAL: --stage-weights ...`；**`848322b`** `LOCAL setup: pin gcc-13 ...` |
+| 补丁文件 | `local-patches/0001-LOCAL-stage-weights-...patch`；`local-patches/0001-LOCAL-setup-pin-gcc-13-...patch` |
 | 构建 | CUDA 12.8 / gcc-13 / sm_75，见 §6 |
 
 > 上游 remote 已在 `~/strata`（Niko1221/Strata）。worktree `~/strata-v0134`
@@ -80,7 +80,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 文件层预取 | 0.1.31 起有 routing-aware 预取 | 不要移植 |
 | **`--stage-weights`** | **没有**；上游注释明确「每个 stage 保留完整 dense 权重副本」 | **移植** |
 
-因此主版本再有更新时，**只需重放 `c8e9bea` 这一个提交**。
+因此主版本再有更新时，**只需重放这两个本地提交**（`c8e9bea` + `848322b`）。
 
 ---
 
@@ -92,7 +92,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 cd ~/strata-v0134
 git fetch origin
 git checkout port-v0134
-git rebase origin/main          # 把 c8e9bea 重放到新上游
+git rebase origin/main          # 把 c8e9bea / 848322b 重放到新上游
 # 解决冲突（见下）后：
 cmake --build build --target strata -j16
 cp -f build/strata engine/strata
