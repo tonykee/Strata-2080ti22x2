@@ -26,7 +26,15 @@
   驻留专家 19036→21141，长 prompt +2.7%。
 - 填充随 prompt 变长而升高（固定开销被摊薄、更多专家进入流水）。
 
-## 3. 启动 / 停止
+## 3. 视觉验证（本部署）
+
+红底 + 白色大写文字 `STRATA 12345`（`.bench/testimg.png`），经双卡 layer split：
+
+- 问「背景什么颜色、文字是什么」→ 回答
+  `The background of the image is red.` / `The text in the image reads exactly: STRATA 12345`
+- `finish_reason: stop`，解码 ~62.5 tok/s，图片路径无回归。
+
+## 4. 启动 / 停止
 
 ```sh
 cd ~/strata-v0134
@@ -41,7 +49,7 @@ cd ~/strata-v0134
 curl -s -H "Authorization: Bearer llama_local" http://127.0.0.1:8000/v1/models
 ```
 
-## 4. 关键配置（`strata-swift-iq3_xxs.json`）
+## 5. 关键配置（`strata-swift-iq3_xxs.json`）
 
 与旧 `~/strata` 的 Swift IQ3_XXS 配置一致，差别只有：
 
@@ -52,7 +60,7 @@ curl -s -H "Authorization: Bearer llama_local" http://127.0.0.1:8000/v1/models
 
 **不要**加 `--no-prefill-borrow`（长 prompt −20%）；**不要**加 `STRATA_SPLIT_RING`（无益）。
 
-## 5. 重新编译
+## 6. 重新编译
 
 ```sh
 cd ~/strata-v0134
@@ -67,6 +75,6 @@ cp -f build/strata engine/strata
 # 视觉：cmake -S tools/vision -B build-vision ... ; cp build-vision/bin/strata-vision engine/
 ```
 
-## 6. 回退
+## 7. 回退
 
 `~/strata` 完全没动，直接 `cd ~/strata && ./start_iq3.sh` 即可回到原 v0.1.31 部署。
