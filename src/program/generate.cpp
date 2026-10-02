@@ -386,6 +386,10 @@ struct Options {
     /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
     /// from each GPU's free VRAM); empty = one GPU
     std::string layer_split;
+    /// --stage-weights (LOCAL): with an explicit layer split, each stage loads only the dense weights of the
+    /// layers it runs (global tensors are kept).  Upstream gives every later stage a full copy; omitting the
+    /// other stages' blk.N.* frees that VRAM for the expert cache.  Requires an explicit --layer-split K.
+    bool stage_weights = false;
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
@@ -544,6 +548,9 @@ void usage() {
                  "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
                  "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
                  "  --stats              print the per-stage breakdown\n"
+                 "  --stage-weights      LOCAL: with an explicit --layer-split K, each stage loads only its own\n"
+                 "                       layers' dense weights (globals kept) - frees the duplicate copies for the\n"
+                 "                       expert cache.  Requires native --serve and --spec >= 2.\n"
                  "  --gpu-stages         R0.9: capture the layer as three graphs (mixer / ffn+router / post)\n"
                  "                       and time them from OUTSIDE the capture.  The per-stage table on the\n"
                  "                       real graph that --stage-timing cannot give.  Prints and exits.\n"
@@ -1225,6 +1232,7 @@ int main(int argc, char** argv) {
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
+        else if (a == "--stage-weights") o.stage_weights = true;
         else if (a == "--split-device") o.split_device = next("--split-device");
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
@@ -1407,6 +1415,17 @@ int main(int argc, char** argv) {
         }
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
+    // --stage-weights (LOCAL): the later stages' weight arenas are sized before the auto split is searched, so this
+    // needs the split points from the CLI.
+    if (o.stage_weights && (!multi_gpu || split_auto || !o.serve || o.native_preset.empty() || o.spec < 2)) {
+        std::fprintf(stderr, "strata generate: --stage-weights requires native --serve, --spec >= 2 and an explicit "
+                             "multi-GPU --layer-split (e.g. 24), not auto\n");
+        return 2;
+    }
+    if (o.stage_weights && (o.gpu_only_full || o.graph_only || o.gpu_stages)) {
+        std::fprintf(stderr, "strata generate: --stage-weights cannot use whole-model graph diagnostics\n");
+        return 2;
+    }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
@@ -1985,7 +2004,9 @@ int main(int argc, char** argv) {
         if (native_pack) skip.insert("token_embd.weight");
     }
     uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    const strata::core::WeightStage main_weight_stage{0, split_at.empty() ? 0 : split_at.front()};
+    const strata::core::WeightStage* main_weight_range = o.stage_weights ? &main_weight_stage : nullptr;
+    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip, main_weight_range)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -2005,10 +2026,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip, main_weight_range)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
+    if (o.stage_weights)
+        std::fprintf(stderr, "strata generate: --stage-weights: CUDA0 loads layers 0-%lld only (%.2f MiB)\n",
+                     (long long) (main_weight_stage.end - 1), (double) pool_bytes / 1048576.0);
     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s (%zu canonical tensors skipped: "
                          "served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), skip.size());
@@ -2303,19 +2327,34 @@ int main(int argc, char** argv) {
             return 1;
         }
         const strata::core::OnDevice on(st.dev);
+        const bool last = i + 1 == split_devs.size();
+        const strata::core::WeightStage stage_range{
+            o.stage_weights ? split_at[i] : 0,
+            o.stage_weights && !last ? split_at[i + 1] : g.n_layers};
+        const strata::core::WeightStage* weight_range = o.stage_weights ? &stage_range : nullptr;
+        uint64_t stage_pool_bytes = pool_bytes;
+        if (o.stage_weights &&
+            !strata::core::WeightTable::pool_bytes(o.pack, stage_pool_bytes, err, skip.empty() ? nullptr : &skip, weight_range)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev, err.c_str());
+            return 1;
+        }
         void* arena_s = nullptr;
-        if (cudaMalloc(&arena_s, pool_bytes) != cudaSuccess ||
-            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+        if (cudaMalloc(&arena_s, stage_pool_bytes) != cudaSuccess ||
+            !st.wt.load(o.pack, arena_s, stage_pool_bytes, err, skip.empty() ? nullptr : &skip, weight_range)) {
             cudaGetLastError();
             size_t free_b = 0, total_b = 0;   // #486: what that card had free
             cudaMemGetInfo(&free_b, &total_b);
             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s (%llu MiB needed, %llu MiB of %llu "
                                  "MiB free on that card)\n", st.dev,
                          err.empty() ? "the weight arena does not fit" : err.c_str(),
-                         (unsigned long long) (pool_bytes >> 20), (unsigned long long) (free_b >> 20),
+                         (unsigned long long) (stage_pool_bytes >> 20), (unsigned long long) (free_b >> 20),
                          (unsigned long long) (total_b >> 20));
             return 1;
         }
+        if (o.stage_weights)
+            std::fprintf(stderr, "strata generate: --stage-weights: CUDA%d loads layers %lld-%lld only (%.2f MiB)\n",
+                         st.dev, (long long) stage_range.begin, (long long) (stage_range.end - 1),
+                         (double) stage_pool_bytes / 1048576.0);
         if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());

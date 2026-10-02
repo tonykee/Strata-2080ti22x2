@@ -87,6 +87,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);
+    if (r && !r->stage_resident) { err = v.name(suffix) + " belongs to another GPU stage"; return nullptr; }
     if (r == nullptr && err.empty()) err = v.name(suffix) + " is missing";
     return r;
 }

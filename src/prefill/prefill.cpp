@@ -1194,6 +1194,7 @@ namespace {
 
 const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::string& err) {
     const core::WeightRef* r = v.get(suffix);
+    if (r && !r->stage_resident) { err = v.name(suffix) + " belongs to another GPU stage"; return nullptr; }
     if (!r) err = v.name(suffix) + " is missing";
     return r;
 }

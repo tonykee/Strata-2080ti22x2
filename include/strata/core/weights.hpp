@@ -27,6 +27,8 @@
 // logits.  Python wrote the manifest and already parses it correctly.
 #pragma once
 
+#include "strata/core/weight_stage.hpp"
+
 #include <cstdint>
 #include <map>
 #include <set>
@@ -93,6 +95,7 @@ struct WeightRef {
     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
     bool resident = true;
+    bool stage_resident = true; ///< false only for layers assigned to another GPU (--stage-weights)
 };
 
 struct LoadReport {
@@ -111,7 +114,7 @@ public:
     /// than halfway through a 5 GB upload.
     /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                           const std::set<std::string>* skip = nullptr);
+                           const std::set<std::string>* skip = nullptr, const WeightStage* stage = nullptr);
 
     /// The `code_bits` field of one row of `<pack_dir>/index.txt`, readable WITHOUT loading anything (0 = the
     /// pack stores the tensor unquantized, e.g. a --compat-bf16 key; -1 = no such row).  #326: the loader has
@@ -126,7 +129,7 @@ public:
     /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-              const std::set<std::string>* skip = nullptr);
+              const std::set<std::string>* skip = nullptr, const WeightStage* stage = nullptr);
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }
