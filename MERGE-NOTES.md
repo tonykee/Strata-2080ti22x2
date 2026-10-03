@@ -23,6 +23,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 基线提交 | `origin/main` = **v0.1.38**（`99f3dbd`）；2026-10-03 从 v0.1.34 同步上来 |
 | 本仓库分支 | `port-v0134`（名字保留；内容是 v0.1.38 + 补丁） |
 | 本地提交 | **`a15d062`** `LOCAL: --stage-weights ...`；**`c006996`** `LOCAL setup: pin gcc-13 ...` |
+| cherry-pick 的上游 PR | **`66f4945`** = #593（BF16→FP16 tensor core, sm_75）；**`977a9fa`** = #575（qsa top-k 拆分）。见 §9 |
 | 补丁文件 | `local-patches/0001-LOCAL-stage-weights-...patch`；`local-patches/0001-LOCAL-setup-pin-gcc-13-...patch` |
 | 构建 | CUDA 12.8 / gcc-13 / sm_75，见 §6 |
 
@@ -202,3 +203,27 @@ Swift IQ3_XXS，256K，kv-resident，视觉开，2× RTX 2080 Ti 22G：
 `cd ~/strata && git checkout main`（代码回到 v0.1.31 + gcc-13 补丁），旧引擎二进制在
 `engine-bak-0131/`；或 `git checkout port-v0134` 切回本部署。分支 `main` 与 `port-v0134`
 都保留，随时可切。
+
+---
+
+## 9. 合入的上游 PR（#593 / #575）
+
+两个上游**开放** PR 以 cherry-pick 合入（都基于 v0.1.38，单提交，改动小）：
+
+| 提交 | PR | 作用 | 实测（本机 IQ3_XXS） |
+|---|---|---|---|
+| `66f4945` | [#593](https://github.com/Niko1221/Strata/pull/593) | BF16 投影（router/indexer/GDN/hyper-connection）走 **FP16 tensor core**（sm_70/sm_75）；复用 prompt 缓冲 + dequant scratch | prefill 12.5K **+19%** |
+| `977a9fa` | [#575](https://github.com/Niko1221/Strata/pull/575) | qsa top-k 超寄存器容量（~135K cells）时拆分 + 合并 | 长 prompt 叠加到 **+22%** |
+
+**内存中性**：合入前后启动驻留/缓存/剩余显存逐项一致（21141 专家、9283 槽、472 MiB、21529/21510 MiB）。
+
+### 重新获取 / 移除
+
+```sh
+cd ~/strata
+git fetch origin pull/593/head:pr593 pull/575/head:pr575   # 重新取
+git rebase -i origin/main                                  # 交互式，删掉这两个提交即可移除
+```
+
+**上游若合并了它们**：下次 `git rebase origin/main` 时这两个提交多半会变成空提交或被判为已应用——直接 `git rebase --skip` 跳过即可（我们自己的两个 `LOCAL` 补丁继续保留）。
+
