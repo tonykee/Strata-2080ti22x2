@@ -11,8 +11,8 @@
 | 上游 remote | `origin` = https://github.com/Niko1221/Strata |
 | 上游基线 | `origin/main` = **`99f3dbd`**（v0.1.38，2026-10-03） |
 | 本分支 | `port-v0134`（名字保留；内容随上游滚动） |
-| 领先上游 | 18 个提交 |
-| 聚合改动 | 21 个文件，+1414 / −44 |
+| 领先上游 | 19 个提交（含本文档） |
+| 聚合改动 | 22 个文件，+1523 / −44 |
 
 > **注意**：rebase 会重写提交哈希，下面的哈希只是当前值；同步时按**提交主题**识别。
 
@@ -58,6 +58,7 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589
 
 | 文件 | 说明 |
 |---|---|
+| `LOCAL-DELTAS.md` | 本文档：本地 vs 上游差异总清单 |
 | `MERGE-NOTES.md` | 合并原理 + 同步步骤 + 冲突热点 |
 | `PREFILL-PORT.md` | 填充/解码实测、调优、运行/重编/回退 |
 | `DFLASH2-STATUS.md` | DFlash2 上游状态 + 训练可行性 |
@@ -78,6 +79,8 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589
 | `mtp-rt/` | 隔离的 MTP 目录（en 草稿词表 + 软链到 `Strata-data/mtp/rt` 的权重） |
 | `.bench/` | 基准脚本/请求/结果；`.bench/configs/` 存实验配置 |
 | `engine-bak-*/`、`old-local-backup/` | 回退用的旧引擎/旧文件 |
+| `IQ3_S-NOTES.md`（未跟踪） | 你/另一会话留下的 IQ3_S 部署留底，未提交；不被本分支改动 |
+| `backup-*` 分支 | `backup-before-583`、`backup-with-593-575`、`backup-port-v0138-pre-prs`、`backup-port-v0134`、`backup-main-0131`（= `main`） |
 
 ---
 

@@ -2,6 +2,7 @@
 
 > 本文件说明 `~/strata` 相对上游 `Niko1221/Strata` 做了什么改动、改动在哪、
 > 以及**主版本更新时如何把这套填充优化重新同步进来**。
+> **完整的本地 vs 上游差异清单见同目录 [`LOCAL-DELTAS.md`](LOCAL-DELTAS.md)**；
 > 运行/实测数据/回退见同目录 [`PREFILL-PORT.md`](PREFILL-PORT.md)。
 
 ---
