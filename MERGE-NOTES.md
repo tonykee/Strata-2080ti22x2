@@ -233,6 +233,7 @@ git rebase -i origin/main                                  # 交互式，删掉�
 |---|---|---|---|
 | [#500](https://github.com/Niko1221/Strata/pull/500) | `9627bf8` `d728f36`（已撤） | CPU 专家池中间激活量化并行化（消 phase5→6 屏障） | prefill 12.5K +1.0%、49.7K +0.2%、193K −0.3%；decode 不变 —— **≈0**，已回退 |
 | [#547](https://github.com/Niko1221/Strata/pull/547) | `0de400d`（已撤） | prefill `bytes_needed` 按 carve 实算（prompt 借用 3.94→3.78 GiB） | 填充/decode 无变化，已回退 |
+| [#583](https://github.com/Niko1221/Strata/pull/583) | `54dde7b` `a2feb06` `9878134`（已撤） | ring 改按字节预算（分卡 ring 96→227 槽）、`--prefill auto` 改二分选块 | 裸 `auto`：12.5K +1.4% / 49.7K +1.0% / 193K −0.4%（噪声内）；`auto:16384`：49.7K **−11%**、193K **−5%**（更大块更差）。**无明显收益，已回退** |
 
 > 两者都在噪声内；按「只保留有实测收益的改动」原则移除（`git reset --hard 864bf68` 后仅重放 #589）。
 
