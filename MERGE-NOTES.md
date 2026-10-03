@@ -20,18 +20,22 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 项 | 值 |
 |---|---|
 | 上游 | `https://github.com/Niko1221/Strata` |
-| 基线提交 | `origin/main` = **v0.1.34**（`1678de3`） |
-| 本仓库分支 | `port-v0134` |
-| 本地提交 | **`c8e9bea`** `LOCAL: --stage-weights ...`；**`848322b`** `LOCAL setup: pin gcc-13 ...` |
+| 基线提交 | `origin/main` = **v0.1.38**（`99f3dbd`）；2026-10-03 从 v0.1.34 同步上来 |
+| 本仓库分支 | `port-v0134`（名字保留；内容是 v0.1.38 + 补丁） |
+| 本地提交 | **`a15d062`** `LOCAL: --stage-weights ...`；**`c006996`** `LOCAL setup: pin gcc-13 ...` |
 | 补丁文件 | `local-patches/0001-LOCAL-stage-weights-...patch`；`local-patches/0001-LOCAL-setup-pin-gcc-13-...patch` |
 | 构建 | CUDA 12.8 / gcc-13 / sm_75，见 §6 |
 
-> 上游 remote 已在 `~/strata`（Niko1221/Strata）。worktree `~/strata`
-> 与主仓库共享 git 对象，`origin` 可直接 `git fetch`。
+> **2026-10-03 从 v0.1.34 rebase 到 v0.1.38**：唯一冲突在 `src/program/generate.cpp`
+> （上游 #486 的显存不足报错 × 我们的 `stage_pool_bytes`），已合并为"用 stage 尺寸 + 保留 #486 报错"。
+> `weights.hpp`/`weights.cpp`/`native_dense.cpp` 上游未动，补丁干净套用；`setup.py` 的 gcc-13 补丁自动合入。
+
+> 上游 remote 就是 `~/strata` 的 `origin`（Niko1221/Strata）；`git fetch` 后
+> `git rebase origin/main` 即可重放本地补丁。
 
 ---
 
-## 2. 改了什么（提交 `c8e9bea`，7 个文件，+82/−13）
+## 2. 改了什么（提交 `a15d062`，7 个文件，+82/−13）
 
 ### 2.1 新增：`include/strata/core/weight_stage.hpp`
 一个按层区间判断张量归属的小结构体 `WeightStage{begin,end}`：
@@ -80,7 +84,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 | 文件层预取 | 0.1.31 起有 routing-aware 预取 | 不要移植 |
 | **`--stage-weights`** | **没有**；上游注释明确「每个 stage 保留完整 dense 权重副本」 | **移植** |
 
-因此主版本再有更新时，**只需重放这两个本地提交**（`c8e9bea` + `848322b`）。
+因此主版本再有更新时，**只需重放这两个本地提交**（`a15d062` + `c006996`）。
 
 ---
 
@@ -92,7 +96,7 @@ resident-RAM 等）**上游 v0.1.34 已有更完整的实现**，没有移植（
 cd ~/strata
 git fetch origin
 git checkout port-v0134
-git rebase origin/main          # 把 c8e9bea / 848322b 重放到新上游
+git rebase origin/main          # 把 a15d062 / c006996 重放到新上游
 # 解决冲突（见下）后：
 cmake --build build --target strata -j16
 cp -f build/strata engine/strata

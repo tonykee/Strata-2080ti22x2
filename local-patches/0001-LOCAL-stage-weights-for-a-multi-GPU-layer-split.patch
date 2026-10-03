@@ -1,4 +1,4 @@
-From c8e9beae8dd1e878097ce77e31dbfff85bd1fc72 Mon Sep 17 00:00:00 2001
+From a15d062e4367b58354f11fb3026a746eb4951c2f Mon Sep 17 00:00:00 2001
 From: local <local@localhost>
 Date: Fri, 2 Oct 2026 15:08:45 +0800
 Subject: [PATCH] LOCAL: --stage-weights for a multi-GPU layer split
@@ -20,14 +20,14 @@ later stage a full copy; this frees that VRAM for the expert cache.
 Measured on 2x RTX 2080 Ti 22G (Swift IQ3_XXS, 262144 ctx, kv-resident):
 CUDA1 free VRAM 13.7 -> 19.4 GiB, resident experts 19036 -> 21141.
 ---
- include/strata/core/weight_stage.hpp | 21 +++++++++++++
- include/strata/core/weights.hpp      |  7 +++--
+ include/strata/core/weight_stage.hpp | 21 ++++++++++++
+ include/strata/core/weights.hpp      |  7 ++--
  src/core/native_dense.cpp            |  1 +
  src/core/verify.cpp                  |  1 +
- src/core/weights.cpp                 | 17 +++++-----
+ src/core/weights.cpp                 | 17 ++++++----
  src/prefill/prefill.cpp              |  1 +
- src/program/generate.cpp             | 47 +++++++++++++++++++++++++---
- 7 files changed, 82 insertions(+), 13 deletions(-)
+ src/program/generate.cpp             | 49 +++++++++++++++++++++++++---
+ 7 files changed, 83 insertions(+), 14 deletions(-)
  create mode 100644 include/strata/core/weight_stage.hpp
 
 diff --git a/include/strata/core/weight_stage.hpp b/include/strata/core/weight_stage.hpp
@@ -109,10 +109,10 @@ index 4a86d48..7e441c0 100644
                  if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
                  // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
 diff --git a/src/core/verify.cpp b/src/core/verify.cpp
-index 999f85d..7446276 100644
+index f956d73..d4b1653 100644
 --- a/src/core/verify.cpp
 +++ b/src/core/verify.cpp
-@@ -86,6 +86,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
+@@ -87,6 +87,7 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
  
  const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
      const WeightRef* r = v.get(suffix);
@@ -190,10 +190,10 @@ index 8b42f84..0a07cbb 100644
              wr.ne0 = r.ne0;
              wr.ne1 = r.ne1;
 diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
-index ed47b97..918d89f 100644
+index 5d46e4b..cb37798 100644
 --- a/src/prefill/prefill.cpp
 +++ b/src/prefill/prefill.cpp
-@@ -925,6 +925,7 @@ namespace {
+@@ -1194,6 +1194,7 @@ namespace {
  
  const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::string& err) {
      const core::WeightRef* r = v.get(suffix);
@@ -202,10 +202,10 @@ index ed47b97..918d89f 100644
      return r;
  }
 diff --git a/src/program/generate.cpp b/src/program/generate.cpp
-index fa52c6b..9c6c2b1 100644
+index a7c77d0..d224ad2 100644
 --- a/src/program/generate.cpp
 +++ b/src/program/generate.cpp
-@@ -367,6 +367,10 @@ struct Options {
+@@ -386,6 +386,10 @@ struct Options {
      /// --serve, multi-GPU layer split: "K" or "K1,K2,.." (the first layer of each later stage) or "auto" (placed
      /// from each GPU's free VRAM); empty = one GPU
      std::string layer_split;
@@ -216,7 +216,7 @@ index fa52c6b..9c6c2b1 100644
      /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
      /// GPU, sharing everything - the bit-exact A/B of the hand-off)
      std::string split_device;
-@@ -525,6 +529,9 @@ void usage() {
+@@ -544,6 +548,9 @@ void usage() {
                   "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
                   "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
                   "  --stats              print the per-stage breakdown\n"
@@ -226,7 +226,7 @@ index fa52c6b..9c6c2b1 100644
                   "  --gpu-stages         R0.9: capture the layer as three graphs (mixer / ffn+router / post)\n"
                   "                       and time them from OUTSIDE the capture.  The per-stage table on the\n"
                   "                       real graph that --stage-timing cannot give.  Prints and exits.\n"
-@@ -1141,6 +1148,7 @@ int main(int argc, char** argv) {
+@@ -1225,6 +1232,7 @@ int main(int argc, char** argv) {
          else if (a == "--stop-eos") o.stop_eos = true;
          else if (a == "--spec-split") o.spec_split = true;
          else if (a == "--layer-split") o.layer_split = next("--layer-split");
@@ -234,7 +234,7 @@ index fa52c6b..9c6c2b1 100644
          else if (a == "--split-device") o.split_device = next("--split-device");
          else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
          else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
-@@ -1312,6 +1320,17 @@ int main(int argc, char** argv) {
+@@ -1407,6 +1415,17 @@ int main(int argc, char** argv) {
          }
      }
      bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
@@ -252,7 +252,7 @@ index fa52c6b..9c6c2b1 100644
      bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
      if (o.mmap_experts && !o.shared_expert_arena.empty()) {
          std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
-@@ -1883,7 +1902,9 @@ int main(int argc, char** argv) {
+@@ -1985,7 +2004,9 @@ int main(int argc, char** argv) {
          if (native_pack) skip.insert("token_embd.weight");
      }
      uint64_t pool_bytes = 0;
@@ -263,7 +263,7 @@ index fa52c6b..9c6c2b1 100644
          std::fprintf(stderr, "strata generate: %s\n", err.c_str());
          return 1;
      }
-@@ -1894,10 +1915,13 @@ int main(int argc, char** argv) {
+@@ -2005,10 +2026,13 @@ int main(int argc, char** argv) {
          return 1;
      }
      strata::core::WeightTable wt;
@@ -278,7 +278,7 @@ index fa52c6b..9c6c2b1 100644
      std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s (%zu canonical tensors skipped: "
                           "served natively)\n",
                   (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), skip.size());
-@@ -2192,13 +2216,28 @@ int main(int argc, char** argv) {
+@@ -2303,19 +2327,34 @@ int main(int argc, char** argv) {
              return 1;
          }
          const strata::core::OnDevice on(st.dev);
@@ -298,8 +298,15 @@ index fa52c6b..9c6c2b1 100644
 -            !st.wt.load(o.pack, arena_s, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
 +        if (cudaMalloc(&arena_s, stage_pool_bytes) != cudaSuccess ||
 +            !st.wt.load(o.pack, arena_s, stage_pool_bytes, err, skip.empty() ? nullptr : &skip, weight_range)) {
-             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s\n", st.dev,
-                          err.empty() ? "the weight arena does not fit" : err.c_str());
+             cudaGetLastError();
+             size_t free_b = 0, total_b = 0;   // #486: what that card had free
+             cudaMemGetInfo(&free_b, &total_b);
+             std::fprintf(stderr, "strata generate: layer split, CUDA%d weights: %s (%llu MiB needed, %llu MiB of %llu "
+                                  "MiB free on that card)\n", st.dev,
+                          err.empty() ? "the weight arena does not fit" : err.c_str(),
+-                         (unsigned long long) (pool_bytes >> 20), (unsigned long long) (free_b >> 20),
++                         (unsigned long long) (stage_pool_bytes >> 20), (unsigned long long) (free_b >> 20),
+                          (unsigned long long) (total_b >> 20));
              return 1;
          }
 +        if (o.stage_weights)
