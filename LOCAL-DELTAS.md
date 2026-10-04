@@ -10,12 +10,18 @@
 |---|---|
 | 上游 remote | `origin` = https://github.com/Niko1221/Strata |
 | 上游基线 | `origin/main` = **`99f3dbd`**（v0.1.38，2026-10-03） |
-| 本分支 | `opt-2026-10`（= `port-v0134` + 本次两个优化补丁）；`port-v0134` 为其祖先 |
-| 领先上游 | 25 个提交（含 A/B 类补丁与本地文档；随文档提交增删） |
-| 聚合改动 | 44 个文件，+2930 / −369 |
+| 部署分支 | `port-v0134`（= 上游 + A/B 类补丁 + #650 + #646） |
+| 候选分支 | `batch-559-646`（= `port-v0134` + #559 多用户并发；提交 `4491149`） |
+| 领先上游 | `batch-559-646` 领先 49 个提交（含 #559 的 20 个；随文档提交增删） |
+| 聚合改动 | 60 个文件，+6033 / −485 |
 
 > **2026-10-04 优化评估**：见 [`OPT-2026-10.md`](OPT-2026-10.md)。新增 B 类补丁 **#650**（启动 −10 s）
 > 与 **#646**（decode **+13%**）；#655/#699/#663/#704/#693/#651 已跳过或回退。
+>
+> **2026-10-04 #559 合并**：候选分支 `batch-559-646` 把上游开放 PR **#559**（batch slots，2..8 会话并发）
+> 合到 #646 上并验证（batch 输出与 solo 逐 token 相同；双并发各 ~27 tok/s、聚合 58.9 rows/s；见
+> [`OPT-2026-10.md`](OPT-2026-10.md) §6）。**注意**：该分支用 #559 的 `--trim-stage-weights` **取代**了
+> 本地 A 类的 `--stage-weights`（见 §1 说明）。
 
 > **注意**：rebase 会重写提交哈希，下面的哈希只是当前值；同步时按**提交主题**识别。
 
@@ -30,6 +36,11 @@
 
 补丁文件：`local-patches/0001-LOCAL-stage-weights-*.patch`、`local-patches/0001-LOCAL-setup-pin-gcc-13-*.patch`。
 
+> **候选分支 `batch-559-646` 的变化**：合入 #559 后，`a15d062` 的 `--stage-weights` 被 **#559 的
+> `--trim-stage-weights` 取代**（两者功能等价；#559 通过 `NativeDense::load(..., layer_lo, layer_hi)` 实现）。
+> 该分支**移除**了 `--stage-weights` 的选项/校验/加载代码，配置需改用 `--trim-stage-weights`。`port-v0134`
+> 仍保留 `--stage-weights`。
+
 ---
 
 ## 2. cherry-pick 的上游开放 PR（B 类；上游合并后应 `--skip` 掉）
@@ -41,11 +52,12 @@
 | `9e3940d` | [#589](https://github.com/Niko1221/Strata/pull/589) | `tools/make_profile.py`、`tools/test_make_profile.py` | `make_profile --reorder`；**需重建 profile 才有运行收益** |
 | `f8ad1fb` | [#650](https://github.com/Niko1221/Strata/pull/650) | `src/core/pinned.cu` | Linux arena 用透明大页；本机启动 **116→105 s**，decode 不变 |
 | `b533132` `08fbf04` | [#646](https://github.com/Niko1221/Strata/pull/646) | 22 文件（`verify.cpp`、`mtp.cpp`、`iq_kernels.cu`、`shared_expert.cu` 等） | decode **+13%**（sm_75）、贪心输出逐字节相同；**`qsa_select.cu` 取 #575 版本**（两套超容量方案互斥） |
+| `4491149`（合并提交） | [#559](https://github.com/Niko1221/Strata/pull/559) | 22 文件（`verify.cpp`、`generate.cpp`、`server.py`、`conversation_*`、`tools/autoconfig.py` 等） | **多用户并发**（`--batch 2..8`）；batch 输出与 solo 逐 token 相同；本机双并发聚合 58.9 rows/s。**取代本地 `--stage-weights`**（见 §1）；仅在候选分支 `batch-559-646` |
 
 重新获取：
 ```sh
 git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
-                 pull/650/head:pr650 pull/646/head:pr646
+                 pull/650/head:pr650 pull/646/head:pr646 pull/559/head:pr559
 ```
 
 ---

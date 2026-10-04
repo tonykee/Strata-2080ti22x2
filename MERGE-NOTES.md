@@ -4,6 +4,10 @@
 > 以及**主版本更新时如何把这套填充优化重新同步进来**。
 > **完整的本地 vs 上游差异清单见同目录 [`LOCAL-DELTAS.md`](LOCAL-DELTAS.md)**；
 > 运行/实测数据/回退见同目录 [`PREFILL-PORT.md`](PREFILL-PORT.md)。
+>
+> **2026-10-04 补充**：候选分支 `batch-559-646` 合入了上游 PR **#559**（多用户并发），其中
+> `--trim-stage-weights` **取代**了本文件描述的 `--stage-weights`（功能等价）。该分支的合并与验证见
+> [`OPT-2026-10.md`](OPT-2026-10.md) §6；`port-v0134` 仍保留 `--stage-weights`。
 
 ---
 
