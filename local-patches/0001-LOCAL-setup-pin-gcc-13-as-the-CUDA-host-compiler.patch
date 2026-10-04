@@ -1,0 +1,47 @@
+From c0069960bde51458919d190b6509301f1d5dec8b Mon Sep 17 00:00:00 2001
+From: local <local@localhost>
+Date: Fri, 2 Oct 2026 18:03:11 +0800
+Subject: [PATCH] LOCAL setup: pin gcc-13 as the CUDA host compiler
+
+CUDA 12.8 rejects the distro's gcc-14 as the host compiler.  Same patch as
+~/strata's cc1fecd, so setup.py --build works on this box; the manual cmake
+recipe in MERGE-NOTES.md passed these flags explicitly.
+---
+ setup.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/setup.py b/setup.py
+index bc5cdd3..800c8a8 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1986,6 +1986,10 @@ def build_engine(gpu, vision, yes, llama) -> Path:
+         archs = sorted(built | set(archs))
+     nvcc, vcvars = install_build_tools({**gpu, "archs": archs}, yes)
+     cuda_archs = ";".join(str(x) for x in archs)
++    # LOCAL: CUDA 12.8 rejects the distro's gcc-14 as the host compiler; pin gcc-13.
++    extra = ["-DCMAKE_C_COMPILER=gcc-13", "-DCMAKE_CXX_COMPILER=g++-13",
++             "-DCMAKE_CUDA_HOST_COMPILER=g++-13",
++             "-DCMAKE_CUDA_FLAGS=--allow-unsupported-compiler"]
+     if not engine_ok:
+         say("  Compiling the engine for " + ", ".join(f"sm_{x}" for x in archs) + " (a card it had no code for; "
+             "10-20 minutes, once) ..." if new_arch else
+@@ -1993,7 +1997,7 @@ def build_engine(gpu, vision, yes, llama) -> Path:
+             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
+         cmake_build(ROOT, ROOT / "build", "strata",
+                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
+-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs)],
++                     f"-DCMAKE_CUDA_COMPILER={nvcc}", f"-DSTRATA_GGML_DIR={llama}", *engine_defs(archs), *extra],
+                     vcvars, "build-strata.bat")
+         shutil.copy2(ROOT / "build" / EXE, eng / EXE)
+     if not vision_ok:
+@@ -2001,6 +2005,7 @@ def build_engine(gpu, vision, yes, llama) -> Path:
+         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}"]
+         if vision == "gpu":
+             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}"]
++            defs += extra
+         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision", "strata-vision", defs, vcvars, "build-vision.bat")
+         shutil.copy2(ROOT / "build-vision" / "bin" / VEXE, eng / VEXE)
+     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
+-- 
+2.53.0
+

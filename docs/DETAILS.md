@@ -439,7 +439,25 @@ The server listens on `http://127.0.0.1:8080` (change with `--port` in setup, or
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing right now | `GET /status`, `GET /slots` (single slot, busy or idle) |
 | Everything the Monitor tab shows (engine, live state, last requests, hardware) | `GET /metrics` |
+| The same for Prometheus, with vLLM's metric names (asked with `Accept: text/plain` or `?format=prometheus`) | `GET /metrics` |
 | The MCP servers, their state and tools ([below](#tools-from-mcp-servers)) | `GET /mcp` |
+
+`GET /metrics` answers a Prometheus scrape (`Accept: text/plain` or `application/openmetrics-text`) in the text
+format with vLLM's names - `vllm:num_requests_running` / `_waiting`, `vllm:kv_cache_usage_perc`, the token and
+request counters, `vllm:prefix_cache_queries_total` / `_hits_total` (prompt tokens read / reused),
+`vllm:spec_decode_num_draft_tokens_total` / `_accepted_tokens_total` (the MTP drafts), and the histograms
+`vllm:time_to_first_token_seconds`, `vllm:inter_token_latency_seconds` and `vllm:e2e_request_latency_seconds` - so the
+dashboards and alerts written for a vLLM server read this one. With an API key, the scraper sends it as a bearer
+token. Any other request keeps the JSON.
+
+The JSON's own facts that vLLM has no name for come in the same scrape under `strata:`, named after their JSON key,
+so a Monitor-tab panel and a Grafana panel read the same value: `strata:live_state{state="..."}`, `strata:live_tok_s`,
+`strata:live_prefill_tok_s_mean`, `strata:live_prompt_read`, `strata:engine_max_context`,
+`strata:totals_prompt_seconds_total` / `strata:totals_decode_seconds_total`, `strata:last_hit_rate` and
+`strata:last_decode_tok_s` (the last request's), and the hardware - `strata:gpu_util`, `strata:gpu_mem_used_bytes`,
+`strata:gpu_mem_total_bytes`, `strata:gpu_temp_celsius`, `strata:gpu_power_watts` (one sample per card, label
+`gpu`), `strata:cpu`, `strata:ram_used_bytes`, `strata:ram_total_bytes`. A value the server does not have (no GPU
+telemetry, an older engine) has no sample rather than a zero.
 
 `/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
 
@@ -581,9 +599,11 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
-The initial shared-core integration supports a single session GPU: combining
-enabled parking with `--layer-split` is rejected before model loading. Ordinary
-upstream layer-split checkpoints remain available with parking disabled. FP16,
+With `--layer-split`, a parked conversation holds one image per stage (each later stage's
+session and its share of the conversation checkpoints), every image is validated before
+anything is overwritten, and each is restored on its own GPU. Verified on a 4-GPU split:
+a 9,276-token conversation restored in 51 ms, and its follow-up decodes exactly the tokens
+it decodes when the conversation never left (`tools/parking_test.py`). FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.

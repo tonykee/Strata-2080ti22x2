@@ -31,6 +31,8 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <chrono>
+#include <map>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -45,6 +47,7 @@ using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, i
 
 struct VerifyHits {
     const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
+    const int32_t* h_res = nullptr;      ///< host [n_layers * n_expert] slot or -1 (when all >= 0 in stage: zero-doorbell)
     const uint8_t* cache_base = nullptr; ///< slot 0 of the VRAM expert arena
     const uint64_t* slot_off = nullptr;   ///< E-6: host per-slot offsets when slots differ in size (null: slot * blob)
     int64_t n_slots = 0;                  ///< E-6: how many (for the device copy)
@@ -119,6 +122,66 @@ public:
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
+
+    // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
+    //
+    // A batch window holds S INDEPENDENT sequences, one token each: row s is slot s, at slot s's own position,
+    // reading and writing slot s's own state (GDN recurrence and conv history, QSA K/V and indexer, PLE history),
+    // which lives in `slots[s]` - a session carved like this verifier's own (same layer range, same max_cells).
+    // Everything that is per row already (hyper-connections, dense projections, router, shared expert, the
+    // routed experts on the GPU and the CPU, the head) runs once over the S rows, so the weights are read once
+    // per window for all the sequences.  Row s's arithmetic is the single-token window's, so a slot's greedy
+    // tokens are its solo greedy tokens (modulo the multi-token CPU kernel choice: STRATA_IQ_MT_MIN=1).
+    //
+    // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
+    // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
+    bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
+    int n_slots() const { return (int) slots_.size(); }
+    /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
+    bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
+                   std::string& err);
+    /// Keep every row of the last batch window: each slot's state advances by its one token.  With rows per slot
+    /// (set_batch_rows > 1) `n_keep[s]` (1..rows) is how many of slot s's rows to keep - its accepted prefix.
+    bool commit_slots(std::string& err, const int* n_keep = nullptr);
+    /// SPECULATIVE BATCH: every slot of the next batch windows holds `rows` rows - its token and rows-1 drafts at
+    /// consecutive positions - and `out` gets the head's pick after each row (slot s's rows at s * rows).  1 = one
+    /// token per slot, the plain batch window.  S * rows <= max_t.  Continues into the next stage.
+    void set_batch_rows(int rows) {
+        bT_ = rows < 1 ? 1 : rows;
+        if (bT_ > row_stride_) row_stride_ = bT_;
+        if (next_) next_->set_batch_rows(rows);
+    }
+    /// Pipelined groups: the rows per slot of the window this stage launches next (this stage only - another stage
+    /// may be running a window with other rows).  A group's commit inputs sit at base * row_stride (the most rows
+    /// per slot set_batch_rows has seen), so groups never share them whatever rows each window has.
+    void set_stage_rows(int rows) { bT_ = rows < 1 ? 1 : rows; }
+    int batch_rows() const { return bT_; }
+
+    // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
+    // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window
+    // keeps every row, so the commit needs no host decision), and the host serves the rings of every stage that has
+    // a window in flight from one thread (batch_poll does not block).  Stage k can then run group g while stage k+1
+    // runs group g-1.  Rows of group `base` use hand-off rows [base, base + S), so groups never share a hand-off row.
+    bool batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
+    /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
+    /// -1 = an error (err).  Serves every layer that has rung so far.
+    int batch_poll(PoolMultiFn pool, void* user, std::string& err);
+    /// SPECULATIVE BATCH, pipelined: with rows per slot, batch_launch runs only the window; once the last stage's
+    /// picks are known the caller launches the group's commit on every stage with this (asynchronously, on the
+    /// stage's stream, behind whatever runs there): slot base + t keeps n_keep[t] of its rows, whose tokens are
+    /// tokens[t * rows ..] at positions pos[t] ...  Continues into the next stage.
+    bool batch_commit(int base, int S, const int* n_keep, const int32_t* tokens, const int64_t* pos, int rows,
+                      std::string& err);
+    bool batch_busy() const { return b_running_; }
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
+    /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
+    /// default.  Set on the first stage, it reaches the last.
+    void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
+        if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
+        if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    const int32_t* batch_out() const { return b_out_; }
+    bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
     /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
     /// the same stream and the drafter reads nothing it writes, so it overlaps the draft. Whoever reads or writes
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
@@ -162,6 +225,32 @@ public:
 
 private:
     bool capture(int T, std::string& err);
+    // batch windows (see init_slots)
+    std::vector<SessionState*> slots_;
+    int bT_ = 1;                           ///< rows per slot in a batch window (set_batch_rows)
+    int row_stride_ = 1;                   ///< a group's row offset per slot (the most rows per slot)
+    int64_t last_pos_r_[8] = {};           ///< the last batch window's position of every row
+    bool batch_rec_ = false;               ///< record_window is capturing a batch window
+    int row_base_ = 0;                     ///< ... over slots [row_base_, row_base_ + T)
+    bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
+    std::map<int, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< key base * 16 + S
+    int last_base_ = 0;
+    // batch_launch / batch_poll
+    bool b_running_ = false;
+    int64_t b_k_ = 0, b_steps_ = 0;
+    std::chrono::steady_clock::time_point b_last_;
+    int32_t b_out_[8] = {};
+    std::vector<strata::kernels::SamplerParams> slot_sp_;
+    bool sample_rows(int base, int S, std::string& err);   ///< the sampled slots' rows of the last batch window
+    int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
+    int32_t* commitb_ = nullptr;
+    float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
+    void* arena_b_ = nullptr;
+    int64_t last_pos_b_[8] = {};
+    bool capture_batch(int base, int S, std::string& err);
+    void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
+    bool capture_commit_batch(int base, int S, std::string& err);
+    bool stage_batch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err);
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
@@ -173,6 +262,7 @@ private:
     bool head_sampling_ = true;          ///< set_head_sampling
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
+    bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
@@ -182,6 +272,9 @@ private:
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
+    void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
+    bool staged_ = false;
+    bool copy_used_ = false;
     bool capture_commit(std::string& err);
     bool record_window(int T, cudaStream_t cs, std::string& err);
     static constexpr int kProfPer = 33;              // stamps per layer (32 left the hc-read second
@@ -203,6 +296,8 @@ private:
     int32_t last_tokens_[8] = {};
     int64_t n_vocab_ = 0;
     cudaStream_t cs_ = nullptr;
+    cudaStream_t sh_cs_ = nullptr;
+    cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t commit_exec_ = nullptr;
 
@@ -243,6 +338,7 @@ private:
     float *ple_ = nullptr, *emb_ = nullptr, *R_ = nullptr, *mixed_ = nullptr, *bo_ = nullptr;
     float *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *xn_ = nullptr;
     uint8_t* xq_ = nullptr;                                   // T columns of q8_1
+    uint8_t* sh_xq_ = nullptr;                                // T columns of q8_1 for shared expert branch
     float *qkv_L_ = nullptr, *h_L_ = nullptr, *gate_L_ = nullptr, *beta_L_ = nullptr;   // per GDN layer
     float *z_ = nullptr, *y_ = nullptr, *y_dummy_ = nullptr;
     float *qfull_ = nullptr, *qcur_ = nullptr, *kcur_ = nullptr, *vcur_ = nullptr, *idx_raw_L_ = nullptr;
