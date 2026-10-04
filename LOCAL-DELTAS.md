@@ -10,9 +10,12 @@
 |---|---|
 | 上游 remote | `origin` = https://github.com/Niko1221/Strata |
 | 上游基线 | `origin/main` = **`99f3dbd`**（v0.1.38，2026-10-03） |
-| 本分支 | `port-v0134`（名字保留；内容随上游滚动） |
-| 领先上游 | 20 个提交（含 A/B 类补丁与本地文档；随文档提交增删） |
-| 聚合改动 | 22 个文件，+1523 / −44 |
+| 本分支 | `opt-2026-10`（= `port-v0134` + 本次两个优化补丁）；`port-v0134` 为其祖先 |
+| 领先上游 | 25 个提交（含 A/B 类补丁与本地文档；随文档提交增删） |
+| 聚合改动 | 44 个文件，+2930 / −369 |
+
+> **2026-10-04 优化评估**：见 [`OPT-2026-10.md`](OPT-2026-10.md)。新增 B 类补丁 **#650**（启动 −10 s）
+> 与 **#646**（decode **+13%**）；#655/#699/#663/#704/#693/#651 已跳过或回退。
 
 > **注意**：rebase 会重写提交哈希，下面的哈希只是当前值；同步时按**提交主题**识别。
 
@@ -36,10 +39,13 @@
 | `66f4945` | [#593](https://github.com/Niko1221/Strata/pull/593) | `include/strata/prefill/gemm.hpp`、`src/prefill/gemm.cu`、`src/prefill/prefill.cpp` | BF16 投影走 FP16 tensor core（sm_75）；prefill +19% |
 | `977a9fa` | [#575](https://github.com/Niko1221/Strata/pull/575) | `include/strata/kernels/qsa_select.hpp`、`src/kernels/cuda/qsa_select.cu`、`src/kernels/qsa_topk_active_parity.cpp` | qsa top-k 超寄存器容量时拆分；长 prompt 叠加到 +22% |
 | `9e3940d` | [#589](https://github.com/Niko1221/Strata/pull/589) | `tools/make_profile.py`、`tools/test_make_profile.py` | `make_profile --reorder`；**需重建 profile 才有运行收益** |
+| `f8ad1fb` | [#650](https://github.com/Niko1221/Strata/pull/650) | `src/core/pinned.cu` | Linux arena 用透明大页；本机启动 **116→105 s**，decode 不变 |
+| `b533132` `08fbf04` | [#646](https://github.com/Niko1221/Strata/pull/646) | 22 文件（`verify.cpp`、`mtp.cpp`、`iq_kernels.cu`、`shared_expert.cu` 等） | decode **+13%**（sm_75）、贪心输出逐字节相同；**`qsa_select.cu` 取 #575 版本**（两套超容量方案互斥） |
 
 重新获取：
 ```sh
-git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589
+git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
+                 pull/650/head:pr650 pull/646/head:pr646
 ```
 
 ---
@@ -51,6 +57,12 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589
 | [#500](https://github.com/Niko1221/Strata/pull/500) CPU 池量化并行 | ≈0（噪声内），已回退 |
 | [#547](https://github.com/Niko1221/Strata/pull/547) bytes_needed 少借显存 | 无变化，已回退 |
 | [#583](https://github.com/Niko1221/Strata/pull/583) ring 字节预算 + auto 二分 | 裸 auto 噪声内；`auto:16384` −11%/−5%，已回退。**`--prefill` 保持 `auto`，勿调大** |
+| [#655](https://github.com/Niko1221/Strata/pull/655) sm_75 BF16→FP16 tensor core | 与本地 #593 同文件同功能，冗余，未叠加（#593 已 +19%） |
+| [#699](https://github.com/Niko1221/Strata/pull/699) Linux 启动预读 | 本机 SATA SSD 顺序读已到顶（0.51 GiB/s），启动无变化，已回退 |
+| [#663](https://github.com/Niko1221/Strata/pull/663) layer-split 空闲卡帮短 prompt | 本机 1.34K +1.9%、2.59K **−11.7%**（86% 专家常驻，跨卡搬运净亏），已回退 |
+| [#693](https://github.com/Niko1221/Strata/pull/693) prefill 分块细化 + 等长块 | auto 持平、`auto:16384` **−9%**（49.7K 尾块<8192 触发不了等长块），已回退 |
+| [#704](https://github.com/Niko1221/Strata/pull/704) HC_Q8 超连接 int8 | 明确 “Not with a layer split”，本部署不适用 |
+| [#651](https://github.com/Niko1221/Strata/pull/651) PLE 表 Q5_1/Q8_0 | 兼容性补丁，本机 PLE 表格式已支持，无提速 |
 
 ---
 
