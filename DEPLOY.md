@@ -1,12 +1,13 @@
-# 部署说明（2× RTX 2080 Ti 22G · v0.1.39 + #742/#743）
+# 部署说明（2× RTX 2080 Ti 22G · v0.1.39 + #742/#743 + #910）
 
 > 本文档描述 **`~/strata` 主部署**的完整状态：版本、配置、启动、编译、实测、回退。
 > 迁移背景与 A/B 见 [`V0139-MIGRATION.md`](V0139-MIGRATION.md)。
 
 ## 0. 一句话
 
-- **引擎**：上游 **v0.1.39**（`6f32ec0`）+ 开放 PR **#742 / #743**（Turing 长 prompt prefill）。
-- **分支**：`v0.1.39-2080ti`（= `origin/main` + #742 + #743 + 本地文档）。
+- **引擎**：上游 **v0.1.39**（`6f32ec0`）+ **#742 / #743**（Turing 长 prompt prefill）+ **#910 栈**（双卡 decode 流水线等）。
+- **分支**：`v0.1.39-2080ti`（= `origin/main` + #742 + #743 + #910 + 本地文档）。
+- **MTP 词表**：`mtp-rt/draft_vocab.bin` = **多语言（106299）**，不是英文（40525）——★ 中文快慢的关键，见 [`MTP-VOCAB.md`](MTP-VOCAB.md)。
 - **模型**：Swift 1.5 IQ3_XXS（GSQ-RCO，原生 pack）。
 - **硬件**：2× RTX 2080 Ti 22G（Turing **sm_75**）、61 GiB RAM、SATA SSD、CUDA 12.8 / gcc-13。
 - **服务**：`./start_iq3.sh`，端口 **8000**，API key `llama_local`。
@@ -59,7 +60,9 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
     "--suffix-draft", "8",
     "--conversation-cache-mib", "8192",   // 会话停车（parking）
     "--conversation-cache-slots", "4",
-    "--batch", "2", "--batch-groups", "2" // 两个 agent 真并行
+    "--batch", "2", "--batch-groups", "2", // 两个 agent 真并行
+    "--pipeline-windows", "2",             // #910：双卡 decode 流水线（--batch 下被引擎自动禁用）
+    "--adapt-async", "1"                   // #910：resident RAM 模式（本配置下自动禁用）
   ],
   "layer_split": "24",
   "gpu": [0, 1],
@@ -67,7 +70,12 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
   "api_key": "llama_local",
   "env": {
     "STRATA_GR_V3": "1",
-    "STRATA_BF16_TC": "1"            // ★ 必需，见 §5
+    "STRATA_BF16_TC": "1",           // ★ 必需，见 §5
+    "STRATA_ATTN_MERGE_V2": "1",     // #910
+    "STRATA_MTP_KV": "f16",          // #910
+    "STRATA_PL_PLE_PREFETCH": "1",   // #910
+    "STRATA_PL_PLE_LATE": "1",       // #910
+    "STRATA_PL_EARLY_CHAIN": "1"     // #910
   }
 }
 ```
@@ -100,18 +108,21 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 
 ## 6. 实测性能（本机）
 
-单并发（fresh，`--batch 2`，`STRATA_BF16_TC=1`）：
+`--batch 2` 或单并发（fresh，**multi 词表**，`STRATA_BF16_TC=1`）：
 
-| 项 | 本部署 | 旧部署（v0.1.38+补丁） |
+| 项 | 本部署（+#910） | 旧版（仅 #742/#743） |
 |---|---:|---:|
-| prefill 12.5K | ~1110 tok/s | 1047.7 |
-| prefill 49.7K | ~1640 tok/s | 1497.5 |
-| **prefill 192.8K** | **1860.5 tok/s** | 1201.9 |
-| solo decode | ~48–51 tok/s | ~52 |
+| prefill 12.5K | ~1078 tok/s | ~1089 |
+| **prefill 192.8K** | **~1773 tok/s** | ~1799 |
+| **decode 中文（batch2）** | **~73.7 tok/s** | ~64.3 |
+| **decode 中文（单并发）** | **~73.7 tok/s** | ~63.2 |
+| decode 英文 | ~67 tok/s | ~67 |
 
-- **192.8K 读入 158 s → 105 s（+55%）**，靠 #742（FP32 tiled block scores）+ #743（coalesced streaming top-k）。
-- decode 引擎速度与旧部署持平（隔离测试 `--spec 2`：~63.6 vs ~62.6）；完整配置下 tok/s 差异来自
-  **生成内容不同**（prompt 路径舍入）导致的草稿命中不同，不是引擎快慢。
+- **长 prompt prefill 保持 #742/#743 的水平**：192.8K ~1770–1850 tok/s，读入 158 s → ~105 s（**+55%**），
+  靠 #742（FP32 tiled block scores）+ #743（coalesced streaming top-k）。
+- **decode 因 #910 提升 ~15–16%**：`54309f1`（无 #910）~63–64 → `982b651`（+#910）~73.7。
+  - **前提是 multi 词表**（接受率高）。en 词表下中文接受率被压到 ~48%，看不到 #910 的收益——见 [`MTP-VOCAB.md`](MTP-VOCAB.md)。
+  - `--batch 2` 下 `--pipeline-windows` 被引擎禁用，但仍到 ~73.7（batch 重叠）；单并发开 #910 也到 ~73.7。
 
 ## 7. 并发（2 用户）
 
@@ -133,6 +144,8 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 | decode | #646 cherry-pick | 上游 #646 重做版 |
 | prefill 长 prompt | #575 cherry-pick | **#742/#743**（更强） |
 | sm_75 BF16→FP16 | 本地 #593（默认开） | 需 `STRATA_BF16_TC=1` |
+| decode 双卡流水线 | — | **#910 栈**（`--pipeline-windows` / `--adapt-async` + `STRATA_*`） |
+| MTP 草稿词表 | 英文 40525 | **多语言 106299**（见 `MTP-VOCAB.md`） |
 
 - **回退分支**：`batch-559-646`（v0.1.38+补丁）或 `port-v0134`。
 - **回退引擎**：`engine-bak-opt/strata-v0138-batch559`。
@@ -145,7 +158,7 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 | `engine/strata`、`engine/strata-vision` | 本地编译的引擎（sm_75） |
 | `build/`、`build-vision/` | CMake 构建目录 |
 | `strata-swift-iq3_xxs.json` | 主配置（gitignore） |
-| `mtp-rt/` | 隔离的 MTP 目录（en 草稿词表 + 软链到 `Strata-data/mtp/rt`） |
+| `mtp-rt/` | MTP 目录（**multi 草稿词表** + 软链到 `Strata-data/mtp/rt`）；en 备份 `draft_vocab.bin.en.bak` |
 | `data/expert-profile.bin` | 专家 profile |
 | `.bench/` | 基准脚本/请求/结果 |
 | `engine-bak-opt/`、`engine-bak-*`、`old-local-backup/` | 回退用备份 |
