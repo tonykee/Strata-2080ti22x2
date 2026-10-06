@@ -130,7 +130,9 @@ MtpDrafter::~MtpDrafter() {
     if (head_logits_) cudaFree(head_logits_);
     if (dhead_) cudaFree(dhead_);
     if (dvocab_) cudaFree(dvocab_);
-    void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
+    if (ev_chain_) cudaEventDestroy(ev_chain_);
+    for (cudaEvent_t e : ev_step_) if (e) cudaEventDestroy(e);
+    void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_, h_force_};
     for (void* h : hosts) if (h) cudaFreeHost(h);
 }
 
@@ -223,8 +225,28 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
     const bool kv_int8_was = qsa_kv_int8();
+    const bool kv_q4_was = qsa_kv_q4();
     qsa_set_kv_hybrid(false);
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+    // STRATA_MTP_KV=q4|int8|f16 (opt-in): the draft layer's own K/V format; unset, it follows the main layers' as
+    // before.  Under --kv q4_0 the drafter's rotated 4-bit K/V costs draft acceptance, and only the drafts change, never
+    // the verified output: every drafter path reads st_'s own format (the K/V append and attention below, the prompt
+    // path's draft-layer batch, the conversation snapshot's format check).  It is one layer of K/V on the drafter's card,
+    // taken before `--expert-cache auto` sizes the slots: fully resident at --max-context 163840, q4_0 90 MiB, int8 165,
+    // f16 320.
+    std::string mtp_kv;   // "" = the main layers' format
+    if (const char* kv = std::getenv("STRATA_MTP_KV"); kv != nullptr && *kv != '\0') {
+        const std::string want(kv);
+        if (want == "q4" || want == "q4_0") mtp_kv = "q4";
+        else if (want == "int8" || want == "q8") mtp_kv = "int8";
+        else if (want == "f16" || want == "fp16") mtp_kv = "f16";
+        else std::fprintf(stderr, "strata mtp: STRATA_MTP_KV=%s is not q4, int8 or f16; the draft layer keeps the main "
+                                  "layers' K/V format\n", kv);
+    }
+    if (!mtp_kv.empty()) {
+        qsa_set_kv_q4(mtp_kv == "q4");
+        qsa_set_kv_int8(mtp_kv == "int8");
+    }
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
@@ -239,7 +261,15 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
     }
     qsa_set_kv_int8(kv_int8_was);
+    qsa_set_kv_q4(kv_q4_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    if (!mtp_kv.empty())
+        std::fprintf(stderr, "strata mtp: draft layer K/V format %s (STRATA_MTP_KV=%s; main layers %s), rotated %d, %s, "
+                             "state %.1f MiB of VRAM\n", st_.kv_q4 ? "q4_0" : (st_.kv_int8 ? "int8" : "f16"), mtp_kv.c_str(),
+                     kv_hybrid_was ? "k8v4" : (kv_q4_was ? "q4_0" : (kv_int8_was ? "int8" : "f16")), st_.kv_rot ? 1 : 0,
+                     st_.kv_mode == 2 ? "a window ring over pinned RAM"
+                                      : (st_.kv_mode == 1 ? "streamed over pinned RAM (--kv-resident)" : "fully resident"),
+                     (double) sb / 1048576.0);
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
@@ -256,8 +286,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
               mapped(R2 * NH * 4 + 64, (void**) &h_pos_, (void**) &m_pos_) &&
               mapped(64, (void**) &h_row_, (void**) &m_row_) &&
               mapped(T * 4 + 64, (void**) &h_out_, (void**) &m_out_) &&
-              mapped(T * 4 + 64, (void**) &h_prob_, (void**) &m_prob_);
+              mapped(T * 4 + 64, (void**) &h_prob_, (void**) &m_prob_) &&
+              (!force_on_ || mapped(64, (void**) &h_force_, (void**) &m_force_));
     if (!ok) { err = "mtp: mapped staging failed"; return false; }
+    if (h_force_ != nullptr) for (int j = 0; j < 16; ++j) h_force_[j] = -1;
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(R2 * 4); pos_ = b.take<int32_t>(R2 * NH); row_ = b.take<int32_t>(4);
         ident_ = b.take<int32_t>(T * (uint64_t) cap_);
@@ -300,7 +332,17 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             for (int64_t i = 0; i < cap_; ++i) id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
+    // --pipeline-windows 2 (the forcing graphs): the chain shares its card with stage 1's windows and the next launch
+    // on stage 0 waits for it, so its stream gets the highest priority there (STRATA_MTP_PRIORITY=0: the default)
+    bool prio = false;
+#if !defined(STRATA_USE_HIP)   // (HIP: the default priority)
+    static const bool hi_prio = [] { const char* v = std::getenv("STRATA_MTP_PRIORITY"); return v == nullptr || std::atoi(v) != 0; }();
+    int prio_lo = 0, prio_hi = 0;
+    if (force_on_ && hi_prio && cudaDeviceGetStreamPriorityRange(&prio_lo, &prio_hi) == cudaSuccess)
+        prio = cudaStreamCreateWithPriority(&cs_, cudaStreamNonBlocking, prio_hi) == cudaSuccess;
+    cudaGetLastError();
+#endif
+    if (!prio && cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
     std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
                  (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
@@ -717,6 +759,7 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
         coupled_rec_ = false;
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
+    if (ok && force_on_ && !coupled) force_token(tok_, m_force_, 0, cs_);   // chain_launch: step 1's input
     return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
 }
 
@@ -736,6 +779,7 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string& err) {
     bool ok = record_forward(1, row, cs_, err);
     coupled_rec_ = false;
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
+    if (ok && force_on_ && !coupled) force_token(tok_, m_force_, j, cs_);   // chain_launch: step j+1's input
     return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
 }
 
@@ -749,7 +793,26 @@ void MtpDrafter::kv_restore(int64_t upto) {
     cudaStreamSynchronize(cs_);
 }
 
-bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+bool MtpDrafter::prepare_prefill(std::string& err) {
+    const OnDevice on_device(device_);
+    const int64_t per_row = 1 + 4 + g_->n_head;
+    if (pf_cap_ < (int64_t) max_t_ * per_row) {
+        if (pf_dev_) cudaFree(pf_dev_);
+        pf_dev_ = nullptr;
+        pf_cap_ = 0;
+        if (cudaMalloc((void**) &pf_dev_, (size_t) (max_t_ * per_row) * sizeof(int32_t)) != cudaSuccess) {
+            err = "mtp prefill: the input records do not fit";
+            return false;
+        }
+        pf_cap_ = max_t_ * per_row;
+    }
+    for (int T = 1; T <= max_t_; ++T)
+        if (!capture_prefill_dev(T, err)) return false;   // (STRATA_MTP_PREFILL_SYNC's loop syncs anyway)
+    return true;
+}
+
+bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err,
+                         bool sync) {
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
@@ -819,6 +882,11 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
                 return false;
             }
         }
+        if (!sync) {   // the caller orders on stream(); the records are staged (a pageable copy returns once taken)
+            (void) cudaStreamQuery(cs_);
+            ms_prefill += ms_since(t0);
+            return true;
+        }
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
             return false;
@@ -855,6 +923,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
                        float* probs, float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
+    if (chain_live_) { err = "mtp: a pipelined chain is still in flight"; return false; }
     const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
     if (!capture_round(T, cp, err)) return false;
     const int max_steps = std::min(max_t_ - 1, max_drafts_);
@@ -879,7 +948,9 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
+    if (h_force_ != nullptr) for (int j = 0; j < 16; ++j) h_force_[j] = -1;   // the forcing kernels: no-ops here
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!stage_source_R(T, err)) return false;
 
     SessionState* const pss = ple_ss_ ? ple_ss_ : ss_;
     const bool do_ple = pss != nullptr && pss->ple.ready() && pss->ple.table != nullptr;
@@ -973,6 +1044,117 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
+}
+
+bool MtpDrafter::stage_source_R(int T, std::string& err) {
+    if (src_R_ == nullptr || src_R_ == window_R_) return true;
+    if (cudaMemcpyAsync((void*) window_R_, src_R_, (size_t) T * (size_t) (g_->hc * g_->n_embd) * sizeof(float),
+                        cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
+        err = "mtp: staging the window's residual rows failed";
+        return false;
+    }
+    return true;
+}
+
+bool MtpDrafter::prepare_chain(std::string& err) {
+    const OnDevice on_device(device_);
+    if (!force_on_ || h_force_ == nullptr) { err = "mtp: chains need set_force_capture before load"; return false; }
+    for (int T = 1; T <= max_t_; ++T)
+        if (!capture_round(T, false, err)) return false;
+    for (int j = 1; j <= max_t_ - 2; ++j)
+        if (!capture_step(j, false, err)) return false;
+    if (ev_chain_ == nullptr && cudaEventCreateWithFlags(&ev_chain_, cudaEventDisableTiming) != cudaSuccess) {
+        err = "mtp: event creation failed";
+        return false;
+    }
+    for (cudaEvent_t& e : ev_step_)
+        if (e == nullptr && cudaEventCreateWithFlags(&e, cudaEventDisableTiming) != cudaSuccess) {
+            err = "mtp: event creation failed";
+            return false;
+        }
+    return true;
+}
+
+bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force,
+                              int n_out, int n_early, std::string& err) {
+    const OnDevice on_device(device_);
+    if (chain_live_) { err = "mtp: a chain is already in flight"; return false; }
+    if (!force_on_ || ev_chain_ == nullptr) { err = "mtp: chains need prepare_chain"; return false; }
+    if (T < 1 || T > max_t_ || a < 0 || a >= T || n_out < 1 || n_out > max_t_ - 1 || n_force < 0 || n_force > n_out ||
+        n_force > 16) {
+        err = "mtp: chain arguments out of range";
+        return false;
+    }
+    if (round_exec_[T] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+    for (int j = 1; j < n_out; ++j)
+        if (step_exec_[j] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+    const Clock::time_point t0 = Clock::now();
+    const int64_t NH = g_->n_head;
+    auto put = [&](int row, int64_t cell) {
+        h_step_[row * 4 + 0] = (int32_t) cell;
+        h_step_[row * 4 + 1] = (int32_t) (cell + 1);
+        h_step_[row * 4 + 2] = (int32_t) ((cell + 1) / 4);
+        h_step_[row * 4 + 3] = (int32_t) (cell + 1);
+        for (int64_t h = 0; h < NH; ++h) h_pos_[row * NH + h] = (int32_t) cell;
+    };
+    for (int t = 0; t < T; ++t) {
+        h_tok_[t] = tokens[t];
+        put(t, p + t);
+    }
+    put(2 * max_t_ - 1, p + a);                                      // output 0's cell
+    for (int j = 1; j < n_out; ++j) put(max_t_ + j - 1, p + a + j);  // every step's cell, staged at once
+    for (int j = 0; j < 16; ++j) h_force_[j] = j < n_force ? force[j] : -1;
+    h_row_[0] = a;
+    h_row_[1] = 0;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!stage_source_R(T, err)) return false;
+    chain_early_ = std::max(0, std::min(n_early, n_out));
+    bool ok = cudaGraphLaunch(round_exec_[T], cs_) == cudaSuccess;
+    if (ok && chain_early_ >= 1) ok = cudaEventRecord(ev_step_[0], cs_) == cudaSuccess;
+    for (int j = 1; ok && j < n_out; ++j) {
+        ok = cudaGraphLaunch(step_exec_[j], cs_) == cudaSuccess;
+        if (ok && j < chain_early_) ok = cudaEventRecord(ev_step_[j], cs_) == cudaSuccess;
+    }
+    if (!ok || cudaEventRecord(ev_chain_, cs_) != cudaSuccess) {
+        err = std::string("mtp chain: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    (void) cudaStreamQuery(cs_);   // WDDM: submit now
+    steps_seen_ = 0;
+    chain_live_ = true;
+    chain_n_ = n_out;
+    ms_draft += ms_since(t0);
+    ++rounds;
+    return true;
+}
+
+int MtpDrafter::chain_outputs_ready(std::string& err) {
+    if (!chain_live_) return chain_n_;
+    const OnDevice on_device(device_);
+    while (steps_seen_ < chain_early_) {
+        const cudaError_t q = cudaEventQuery(ev_step_[steps_seen_]);
+        if (q == cudaErrorNotReady) break;
+        if (q != cudaSuccess) { err = std::string("mtp chain: ") + cudaGetErrorString(q); return -1; }
+        chain_tok_[steps_seen_] = ((volatile int32_t*) h_out_)[steps_seen_];
+        chain_prob_[steps_seen_] = ((volatile float*) h_prob_)[steps_seen_];
+        ++steps_seen_;
+    }
+    return steps_seen_;
+}
+
+int MtpDrafter::chain_poll(std::string& err) {
+    if (!chain_live_) return 1;
+    const OnDevice on_device(device_);
+    const cudaError_t q = cudaEventQuery(ev_chain_);
+    if (q == cudaErrorNotReady) return 0;
+    chain_live_ = false;
+    if (q != cudaSuccess) { err = std::string("mtp chain: ") + cudaGetErrorString(q); return -1; }
+    for (int j = 0; j < chain_n_; ++j) {
+        chain_tok_[j] = ((volatile int32_t*) h_out_)[j];
+        chain_prob_[j] = ((volatile float*) h_prob_)[j];
+    }
+    for (int j = chain_n_; j < 8; ++j) { chain_tok_[j] = 0; chain_prob_[j] = 0.0f; }
+    return 1;
 }
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
