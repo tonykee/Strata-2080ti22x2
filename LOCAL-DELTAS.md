@@ -88,6 +88,8 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
 | [#1251](https://github.com/Niko1221/Strata/pull/1251) 无 P2P 的 peer prompt share | `--peer-device` 与 `--layer-split` **互斥**；本机有 NVLink（NV2），不需要 host route。不适用（2026-10-08） |
 | [#1099](https://github.com/Niko1221/Strata/pull/1099) 层切分 hand-off 走 NVLink P2P | 依赖上游 **#796 part A**（`bytes_needed_impl`/`bytes_needed_owned` 重构，本 fork 无）→ `prefill.cpp` 结构性冲突；收益仅 +0.9%，未采纳（2026-10-08） |
 | `--peer-device 1`（peer tier） | prefill **−26%（15K）/ −50%（64K）**、decode +3%：GPU0 要扛全部 48 层 → 缓存 8651→5737 槽，且 peer 的 prompt 缓冲没放下（GPU1 闲置）。两卡对等时不划算，已回退（2026-10-08） |
+| [#1720](https://github.com/Niko1221/Strata/pull/1720) Q8_0 dense 反量化合并访问 | **无收益**（效应在 A/B 漂移以内 ≈0）。PR 的"7×"是 **V100 上核的写带宽**，不是端到端；2080 Ti 上 Q8_0 dense 反量化本来就不是瓶颈（2026-10-10） |
+| [#1660](https://github.com/Niko1221/Strata/pull/1660) 驻留层 MMQ 按行数排序（+ 依赖 `c6a0d403`） | **前提不成立**：要求该层 512 个专家**全部常驻**，本机每层有 **144–327 个不在显存**（"99.6% 路由质量"≠"全专家常驻"）→ 排序从不执行。已回退（2026-10-10） |
 
 ---
 
