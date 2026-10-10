@@ -9,11 +9,10 @@
 | 项 | 值 |
 |---|---|
 | 上游 remote | `origin` = https://github.com/Niko1221/Strata |
-| 上游基线 | `origin/main` = **`99f3dbd`**（v0.1.38，2026-10-03） |
-| 部署分支 | **`batch-559-646`**（自 2026-10-05；= `port-v0134` + #559 并发 + parking） |
-| 备用分支 | `port-v0134`（= 上游 + A/B 类补丁 + #650 + #646，无 #559；仍支持 `--stage-weights`） |
-| 领先上游 | `batch-559-646` 领先 49 个提交（含 #559 的 20 个；随文档提交增删） |
-| 聚合改动 | 60 个文件，+6033 / −485 |
+| 上游基线 | `origin/main` = **`fb58e0db`**（v0.1.41 线，2026-10-08） |
+| 部署分支 | **`v0.1.39-2080ti`**（= `main`，自 2026-10-06；= v0.1.39 + #742/#743 + #910 + multi 词表） |
+| 备用分支 | `backup-main-20261010`（提升 #1659 前的 main）、`port-v0134`、`batch-559-646` |
+| 领先上游 | 本地领先 **862** 个提交；上游领先本地 **1552**（两条线已深度分叉，只能挑摘） |
 
 > **2026-10-04 优化评估**：见 [`OPT-2026-10.md`](OPT-2026-10.md)。新增 B 类补丁 **#650**（启动 −10 s）
 > 与 **#646**（decode **+13%**）；#655/#699/#663/#704/#693/#651 已跳过或回退。
@@ -22,6 +21,14 @@
 > 合到 #646 上并验证（batch 输出与 solo 逐 token 相同；双并发各 ~27 tok/s、聚合 58.9 rows/s；见
 > [`OPT-2026-10.md`](OPT-2026-10.md) §6）。**注意**：该分支用 #559 的 `--trim-stage-weights` **取代**了
 > 本地 A 类的 `--stage-weights`（见 §1 说明）。
+
+> **2026-10-08 / 10-10 更新**：
+> - 部署分支 = **`v0.1.39-2080ti`**（= `main`），上游基线 = `origin/main` **`fb58e0db`**（v0.1.41 线）。
+> - 2026-10-08 评估的上游 10-07 后 PR **全部不采纳**（#1441/#1367/#1251/#1099、peer tier），见
+>   [`OPT-2026-10.md`](OPT-2026-10.md) §9 与 §3 的 C 类清单。
+> - 2026-10-10 **收下 #1659**（B 类，FP16 GEMM 的 cuBLAS status-14 保险，见 §2）——这是本 fork 唯一采纳的
+>   新增上游提交；同日确认 `#1237`（pinned stage buffers 会弄坏 IQ3_S decode）与 batch-MTP draft head 修复
+>   **都不适用于本 fork**。
 
 > **注意**：rebase 会重写提交哈希，下面的哈希只是当前值；同步时按**提交主题**识别。
 
@@ -53,11 +60,12 @@
 | `f8ad1fb` | [#650](https://github.com/Niko1221/Strata/pull/650) | `src/core/pinned.cu` | Linux arena 用透明大页；本机启动 **116→105 s**，decode 不变 |
 | `b533132` `08fbf04` | [#646](https://github.com/Niko1221/Strata/pull/646) | 22 文件（`verify.cpp`、`mtp.cpp`、`iq_kernels.cu`、`shared_expert.cu` 等） | decode **+13%**（sm_75）、贪心输出逐字节相同；**`qsa_select.cu` 取 #575 版本**（两套超容量方案互斥） |
 | `4491149`（合并提交） | [#559](https://github.com/Niko1221/Strata/pull/559) | 22 文件（`verify.cpp`、`generate.cpp`、`server.py`、`conversation_*`、`tools/autoconfig.py` 等） | **多用户并发**（`--batch 2..8`）；batch 输出与 solo 逐 token 相同；本机双并发聚合 58.9 rows/s。**取代本地 `--stage-weights`**（见 §1）；仅在候选分支 `batch-559-646` |
+| `c79fba42` | [#1659](https://github.com/Niko1221/Strata/pull/1659) | `include/strata/prefill/gemm.hpp`、`src/prefill/gemm.cu` | **保险**：进程里有第二个 CUDA context 时，cuBLAS 12 的 FP16 **默认算法**对窄形状返回 `CUBLAS_STATUS_INTERNAL_ERROR`(14) → 记住失败形状、只对这些改走 `CUBLAS_GEMM_ALGO2`（issue #1650，Turing + Pascal 实测）。**本机默认 `--short-read 64` 天然免疫**（最后 ≤64 token 走 decode windows，不产生 ~6 token 的角色头小 chunk）；实测性能无变化。**上游合并后 `--skip`** |
 
 重新获取：
 ```sh
 git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
-                 pull/650/head:pr650 pull/646/head:pr646 pull/559/head:pr559
+                 pull/650/head:pr650 pull/646/head:pr646 pull/559/head:pr559 pull/1659/head:pr1659
 ```
 
 ---
@@ -75,6 +83,11 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
 | [#693](https://github.com/Niko1221/Strata/pull/693) prefill 分块细化 + 等长块 | auto 持平、`auto:16384` **−9%**（49.7K 尾块<8192 触发不了等长块），已回退 |
 | [#704](https://github.com/Niko1221/Strata/pull/704) HC_Q8 超连接 int8 | 明确 “Not with a layer split”，本部署不适用 |
 | [#651](https://github.com/Niko1221/Strata/pull/651) PLE 表 Q5_1/Q8_0 | 兼容性补丁，本机 PLE 表格式已支持，无提速 |
+| [#1441](https://github.com/Niko1221/Strata/pull/1441) `STRATA_PREFILL_PIPE` 层切分 chunk 尺寸 | **2 段切分下 15K prefill −15%**（chunk 8192→3840，4 段）；≥64K 等于没变（算出的 chunk 就等于 cap）。作者在 4 段切分上测的，已回退（2026-10-08） |
+| [#1367](https://github.com/Niko1221/Strata/pull/1367) `STRATA_PROMPT_ATTN_IMMA` int8 张量核 prompt attention | 速度中性（1238/1223 vs 1250/1233），仅数值更接近 FP32；未采纳（2026-10-08） |
+| [#1251](https://github.com/Niko1221/Strata/pull/1251) 无 P2P 的 peer prompt share | `--peer-device` 与 `--layer-split` **互斥**；本机有 NVLink（NV2），不需要 host route。不适用（2026-10-08） |
+| [#1099](https://github.com/Niko1221/Strata/pull/1099) 层切分 hand-off 走 NVLink P2P | 依赖上游 **#796 part A**（`bytes_needed_impl`/`bytes_needed_owned` 重构，本 fork 无）→ `prefill.cpp` 结构性冲突；收益仅 +0.9%，未采纳（2026-10-08） |
+| `--peer-device 1`（peer tier） | prefill **−26%（15K）/ −50%（64K）**、decode +3%：GPU0 要扛全部 48 层 → 缓存 8651→5737 槽，且 peer 的 prompt 缓冲没放下（GPU1 闲置）。两卡对等时不划算，已回退（2026-10-08） |
 
 ---
 

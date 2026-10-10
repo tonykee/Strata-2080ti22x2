@@ -17,7 +17,9 @@
 | 项 | 值 |
 |---|---|
 | GPU | 2× NVIDIA RTX 2080 Ti 22 GB（compute capability **7.5**） |
-| RAM | 61 GiB |
+| GPU 互连 | **NVLink NV2**（`topo -m` = NV2；`nvlink -s` Link0/1 各 25.781 GB/s）。**引擎的层切分交接仍走 pinned host（~3.3 GB/s），未用 NVLink** |
+| GPU 功耗上限 | **160 W（有意限功率：散热不好）**；实测负载中只跑到 ~110–128 W，低于上限、不是瓶颈。默认 250 W / 最大 280 W，**不要调高** |
+| RAM | **93 GiB**（2026-10-08 从 61 GiB 升级；4 条混插：2×16 Juhor + 2×32 Cuso，其中一条 2400 2R Hynix → 全通道按 2400 跑，带宽实测 ~32 GB/s） |
 | 系统盘 | WDC WD Blue SATA SSD（~547 MB/s） |
 | CUDA / 编译器 | CUDA 12.8 / gcc-13 |
 | 模型 | `/home/likan/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` |
