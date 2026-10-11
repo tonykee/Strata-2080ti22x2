@@ -60,7 +60,7 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
     "--vram-reserve-mib", "700",
     "--trim-stage-weights",          // v0.1.39: 取代旧的 --stage-weights
     "--suffix-draft", "8",
-    "--conversation-cache-mib", "8192",   // 会话停车（parking）
+    "--conversation-cache-mib", "24576",  // 会话停车（parking）：2026-10-11 由 8192 调大，见 §7
     "--conversation-cache-slots", "4",
     "--batch", "2", "--batch-groups", "2", // 两个 agent 真并行
     "--pipeline-windows", "2",             // #910：双卡 decode 流水线（--batch 下被引擎自动禁用）
@@ -130,12 +130,20 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 
 - `--batch 2 --batch-groups 2`：两个会话**真并行 decode**（每个 verify window 各带一个 token），
   **入场（读 prompt）仍是一次一个**（另一个 slot 暂停）——这是引擎的单序列 prefill 设计。
-- `--conversation-cache-mib 8192`（parking）：会话切走时快照到 RAM、回来时恢复，**后续轮次不重读历史**。
-  实测（13K 会话）：追问只读 89 个新 token、wall 2.1s（首轮 12.9s）。
-- **注意（61 GB）**：262144 长会话的停车快照 ~6.5–7 GiB/会话，本机 RAM 不足时会 **skip parking** →
-  该轮仍重读；**升到 96 GB 后 parking 才稳定生效**。
-- 已知：v0.1.39 的“slot 只剩一个请求就回 solo 路径”在 parking 被跳过时会**整段重读**（2×100K 实测
-  总 wall 207s vs 旧部署 171s）——待 96 GB 后复测。
+- `--conversation-cache-mib 24576`（parking）：会话切走时快照到 RAM、回来时恢复，**后续轮次不重读历史**。
+  实测（2026-10-11，本机 93 GiB RAM）：100K 会话首轮 100092 tok / 53.1s（1884 tok/s），
+  追问 `100087 reused + 38 read` **1.7s**（整段重读要 ~52s）。
+- **停车快照 ≈ 790 MiB + 15.0 KB/token**（实测：100K → 2.20 GiB，200K → 3.63 GiB，262K 约 4.4 GiB）。
+- **池子必须装得下工作集，否则驱逐 → 整段重读**（实测，池 8 GiB）：
+  4 个 100K 会话（4×2.36 = 9.4 GiB）逐个回访 → **#2/#4 `0 reused + 1001xx read`（各 54s）**，只有 #1/#3 复用。
+  同一测试换池 24 GiB → 4 条全部 `1000xx reused + 38 read`（1.1–1.9s），**`evictions=0`**。
+  → 2026-10-11 由 8192 调大到 **24576**。该参数是**预算不是预分配**（不用不占 RAM），
+  `--conversation-cache-min-free-mib 2560` 兜底（RAM 不够时 skip parking，不会 OOM）。
+- **已结案（原“待 96 GB 后复测”那两条）**：93 GiB 下 parking 稳定生效；2×200K 并发回访复用率 100%，
+  不再出现 v0.1.39 的整段重读（2×100K 总 wall 207s）。
+- **注意**：`--pipeline-windows` 与 `--adapt-async` 都**不能**和 `--batch` 共存（源码硬互斥，
+  `not with --batch slots`；`--adapt-async` 还需驻留 RAM 模式，而该模式**不支持层切分**）——
+  跟内存无关，加内存也不会解锁。
 
 ## 8. 与旧部署的差异 / 回退
 
