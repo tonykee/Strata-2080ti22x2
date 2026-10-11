@@ -93,6 +93,7 @@ git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
 | `--peer-device 1`（peer tier） | prefill **−26%（15K）/ −50%（64K）**、decode +3%：GPU0 要扛全部 48 层 → 缓存 8651→5737 槽，且 peer 的 prompt 缓冲没放下（GPU1 闲置）。两卡对等时不划算，已回退（2026-10-08） |
 | [#1720](https://github.com/Niko1221/Strata/pull/1720) Q8_0 dense 反量化合并访问 | **无收益**（效应在 A/B 漂移以内 ≈0）。PR 的"7×"是 **V100 上核的写带宽**，不是端到端；2080 Ti 上 Q8_0 dense 反量化本来就不是瓶颈（2026-10-10） |
 | [#1660](https://github.com/Niko1221/Strata/pull/1660) 驻留层 MMQ 按行数排序（+ 依赖 `c6a0d403`） | **前提不成立**：要求该层 512 个专家**全部常驻**，本机每层有 **144–327 个不在显存**（"99.6% 路由质量"≠"全专家常驻"）→ 排序从不执行。已回退（2026-10-10） |
+| `--batch-mtp`（上游 #846 栈：`8cfb3fd7` `c8c79b17` `48f2c47d` `f90bec6f` `569c0945` `70fc0ba4` `3ff62ec1`） | **已完整移植并实测 → 本机不划算，未采纳**（分支 `port-batch-mtp`，8 提交；含 2 处本地适配：本 fork 无 `ar_off_`/`refresh_ar`、无 `dhead_type_`）。双并发 2×512 token 合计：`--batch-groups 2` 无 mtp **63.8**；`--batch-groups 1` 无 mtp **52.4**；`--batch-groups 1` + mtp **57.3**。即 batch-mtp 本身有效（**+9.4%**，草稿接受率 72.4%），但它**强制 `--batch-groups 1`**（串行分组），而分组流水线在本机值 **+22%** → 合起来仍比现状低 10%。移植后引擎在当前配置下中性（64.6 vs 63.8）。详见 [`OPT-2026-10.md`](OPT-2026-10.md) §9.6（2026-10-11） |
 
 ---
 
