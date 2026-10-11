@@ -40,6 +40,7 @@
 |---|---|---|---|
 | `a15d062` | `LOCAL: --stage-weights for a multi-GPU layer split` | `include/strata/core/weight_stage.hpp`（新）、`include/strata/core/weights.hpp`、`src/core/weights.cpp`、`src/core/native_dense.cpp`、`src/core/verify.cpp`、`src/prefill/prefill.cpp`、`src/program/generate.cpp` | 双卡 layer split 时每卡只加载自己层的 dense 权重（腾显存给专家缓存）。上游 v0.1.38 仍无此功能 |
 | `c006996` | `LOCAL setup: pin gcc-13 as the CUDA host compiler` | `setup.py` | CUDA 12.8 拒绝 gcc-15；固定 gcc-13 + `--allow-unsupported-compiler`。**当前默认 gcc-14 也能编，但防默认变 15** |
+| `cea2d995` | `LOCAL: --pipeline-windows 2 beside --batch slots` | `src/program/generate.cpp`（1 处：删掉 guard 里的 `o.batch != 0` 分支） | 上游把 `--pipeline-windows` 与 `--batch` **硬互斥**（`not with --batch slots`，启动期一次性判定，与当时有几个请求无关）。删掉该分支后：**单请求**（引擎回 solo 路径）走流水线 → 本机 decode **58.8 → 68.8 tok/s（+17%）**，prefill 不变；**双并发**仍走 batch 路径（33.2/32.9，改前 32.0/31.9）**不降**。实测：启动共存（日志确认）、solo↔并发交替加压 5 轮无错、长上下文 100K + 停车正常、batch 路径输出与改前逐字一致（pw 开时近似平局可能换措辞——272 MiB 缓存被流水线占用所致，与**无补丁**的 pw 配置表现相同）。**风险**：上游是故意加的 guard，本机验证非穷尽；**每次同步上游需重放此补丁** |
 
 补丁文件：`local-patches/0001-LOCAL-stage-weights-*.patch`、`local-patches/0001-LOCAL-setup-pin-gcc-13-*.patch`。
 

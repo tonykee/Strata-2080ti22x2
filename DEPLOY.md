@@ -60,10 +60,10 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
     "--vram-reserve-mib", "700",
     "--trim-stage-weights",          // v0.1.39: 取代旧的 --stage-weights
     "--suffix-draft", "8",
-    "--conversation-cache-mib", "24576",  // 会话停车（parking）：2026-10-11 由 8192 调大，见 §7
+    "--conversation-cache-mib", "16384",  // 会话停车（parking）：2026-10-11 由 8192 调大，见 §7
     "--conversation-cache-slots", "4",
     "--batch", "2", "--batch-groups", "2", // 两个 agent 真并行
-    "--pipeline-windows", "2",             // #910：双卡 decode 流水线（--batch 下被引擎自动禁用）
+    "--pipeline-windows", "2",             // #910：双卡 decode 流水线（本地补丁 cea2d995 让它与 --batch 共存，单请求 +17%）
     "--adapt-async", "1"                   // #910：resident RAM 模式（本配置下自动禁用）
   ],
   "layer_split": "24",
@@ -130,19 +130,32 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 
 - `--batch 2 --batch-groups 2`：两个会话**真并行 decode**（每个 verify window 各带一个 token），
   **入场（读 prompt）仍是一次一个**（另一个 slot 暂停）——这是引擎的单序列 prefill 设计。
-- `--conversation-cache-mib 24576`（parking）：会话切走时快照到 RAM、回来时恢复，**后续轮次不重读历史**。
+- **`--pipeline-windows 2` 已与 `--batch` 共存**（本地补丁 `cea2d995`，见 [`LOCAL-DELTAS.md`](LOCAL-DELTAS.md) §1）：
+  上游硬互斥（`not with --batch slots`），删掉该 guard 后单请求回到 solo 路径走流水线。实测（引擎自报 tok/s）：
+
+  | | 单请求 | 双并发（每人 / 合计） |
+  |---|---:|---:|
+  | 改前（batch 2） | 58.8 | 32.0 / 31.9 → **63.8** |
+  | **补丁后（batch 2 + pw 2）** | **68.8（+17%）** | 33.2 / 32.9 → **65.8** |
+
+  prefill 不变（1274.6 → 1281.9 tok/s）。加压：solo↔双并发交替 5 轮无错、长上下文 100K + 停车正常。
+- `--conversation-cache-mib 16384`（parking）：会话切走时快照到 RAM、回来时恢复，**后续轮次不重读历史**。
   实测（2026-10-11，本机 93 GiB RAM）：100K 会话首轮 100092 tok / 53.1s（1884 tok/s），
   追问 `100087 reused + 38 read` **1.7s**（整段重读要 ~52s）。
-- **停车快照 ≈ 790 MiB + 15.0 KB/token**（实测：100K → 2.20 GiB，200K → 3.63 GiB，262K 约 4.4 GiB）。
+- **停车快照 ≈ 790 MiB + 15.0 KB/token**（实测：100K → 2.20 GiB，200K → 3.63 GiB，255K → 4.41 GiB）。
+- **双并发的实测峰值 ≈ 8.8 GiB**（2 个 255K 会话各停 4.41 GiB，`evictions=0`，追问 100% 复用）→ 16384 有约 85% 余量。
 - **池子必须装得下工作集，否则驱逐 → 整段重读**（实测，池 8 GiB）：
   4 个 100K 会话（4×2.36 = 9.4 GiB）逐个回访 → **#2/#4 `0 reused + 1001xx read`（各 54s）**，只有 #1/#3 复用。
   同一测试换池 24 GiB → 4 条全部 `1000xx reused + 38 read`（1.1–1.9s），**`evictions=0`**。
-  → 2026-10-11 由 8192 调大到 **24576**。该参数是**预算不是预分配**（不用不占 RAM），
+  → 2026-10-11 由 8192 调大到 **16384**（按双并发峰值 8.8 GiB + 余量；`--conversation-cache-slots 4` 全满需 17.6 GiB，
+  只在 4 个满长会话同时停车时才需要）。该参数是**预算不是预分配**（不用不占 RAM），
   `--conversation-cache-min-free-mib 2560` 兜底（RAM 不够时 skip parking，不会 OOM）。
 - **已结案（原“待 96 GB 后复测”那两条）**：93 GiB 下 parking 稳定生效；2×200K 并发回访复用率 100%，
   不再出现 v0.1.39 的整段重读（2×100K 总 wall 207s）。
-- **注意**：`--pipeline-windows` 与 `--adapt-async` 都**不能**和 `--batch` 共存（源码硬互斥，
-  `not with --batch slots`；`--adapt-async` 还需驻留 RAM 模式，而该模式**不支持层切分**）——
+- **双并发仍缺 MTP**：batch slot 不跑 MTP 草稿（每个 slot 掉 ~46%，故双并发合计 63.8 < 单请求 68.8）。
+  上游 `--batch-mtp`（#846 `c8c79b17` + 层切分 `48f2c47d`）正是解法，实测双流合计 **+15.4%**（89.2 vs 77.7，2×3080 20GB）；
+  本 fork 尚未移植。
+- **注意**：`--adapt-async` 不能和 `--batch` 共存（源码硬互斥，且需驻留 RAM 模式，而该模式**不支持层切分**）——
   跟内存无关，加内存也不会解锁。
 
 ## 8. 与旧部署的差异 / 回退
