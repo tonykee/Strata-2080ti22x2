@@ -61,11 +61,13 @@
 | `b533132` `08fbf04` | [#646](https://github.com/Niko1221/Strata/pull/646) | 22 文件（`verify.cpp`、`mtp.cpp`、`iq_kernels.cu`、`shared_expert.cu` 等） | decode **+13%**（sm_75）、贪心输出逐字节相同；**`qsa_select.cu` 取 #575 版本**（两套超容量方案互斥） |
 | `4491149`（合并提交） | [#559](https://github.com/Niko1221/Strata/pull/559) | 22 文件（`verify.cpp`、`generate.cpp`、`server.py`、`conversation_*`、`tools/autoconfig.py` 等） | **多用户并发**（`--batch 2..8`）；batch 输出与 solo 逐 token 相同；本机双并发聚合 58.9 rows/s。**取代本地 `--stage-weights`**（见 §1）；仅在候选分支 `batch-559-646` |
 | `c79fba42` | [#1659](https://github.com/Niko1221/Strata/pull/1659) | `include/strata/prefill/gemm.hpp`、`src/prefill/gemm.cu` | **保险**：进程里有第二个 CUDA context 时，cuBLAS 12 的 FP16 **默认算法**对窄形状返回 `CUBLAS_STATUS_INTERNAL_ERROR`(14) → 记住失败形状、只对这些改走 `CUBLAS_GEMM_ALGO2`（issue #1650，Turing + Pascal 实测）。**本机默认 `--short-read 64` 天然免疫**（最后 ≤64 token 走 decode windows，不产生 ~6 token 的角色头小 chunk）；实测性能无变化。**上游合并后 `--skip`** |
+| `0766290a` | [#1821](https://github.com/Niko1221/Strata/pull/1821) | `src/kernels/cuda/qsa_prompt_attn.cu`、`src/kernels/qsa_prompt_attn_parity.cpp` | **Turing + `--kv int8` 专属**：prompt attention（v1）的 int8 K/V 预取进寄存器 + K/V 共享同一块 SMEM（37.9→29.2 KB → 每 SM 1→2 块）。本机交替 A/B：prefill 15K **+3.9%**、130K **+5.1%**，decode 持平；**bit-identical**。**上游合并后 `--skip`** |
 
 重新获取：
 ```sh
 git fetch origin pull/593/head:pr593 pull/575/head:pr575 pull/589/head:pr589 \
-                 pull/650/head:pr650 pull/646/head:pr646 pull/559/head:pr559 pull/1659/head:pr1659
+                 pull/650/head:pr650 pull/646/head:pr646 pull/559/head:pr559 \
+                 pull/1659/head:pr1659 pull/1821/head:pr1821
 ```
 
 ---
