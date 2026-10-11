@@ -2683,7 +2683,9 @@ int main(int argc, char** argv) {
                         : !multi_gpu ? "it needs a layer split on two GPUs"
                         : split_devs.size() != 1 ? "it needs a layer split into exactly two stages"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
-                        : o.batch != 0 ? "not with --batch slots"
+                        // LOCAL (2026-10-11, experiment): upstream refuses --pipeline-windows beside --batch
+                        // ("not with --batch slots").  The guard is dropped here on purpose: a lone request returns
+                        // to the solo path, which then pipelines, while two requests keep the batch path.
                         : o.peer_device >= 1 ? "not with --peer-device"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
