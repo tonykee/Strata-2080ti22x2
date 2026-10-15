@@ -3376,7 +3376,9 @@ int main(int argc, char** argv) {
                         : split_devs.size() > 1 && o.pipeline_windows == 1 ? "--pipeline-windows 1 needs exactly two stages"
                         : split_devs.size() > 1 && o.adapt_async ? "not with --adapt-async on three or more stages"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
-                        : o.batch != 0 ? "not with --batch slots"
+                        // LOCAL (from the 2080 Ti fork): upstream refuses --pipeline-windows beside --batch
+                        // ("not with --batch slots").  The guard is dropped here on purpose: a lone request returns
+                        // to the solo path, which then pipelines, while two requests keep the batch path.
                         : o.peer_device >= 1 ? "not with --peer-device"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
