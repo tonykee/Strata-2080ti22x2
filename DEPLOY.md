@@ -11,7 +11,9 @@
   上游历史与旧分支**无关**（不是 merge，是让主干指向它）→ 旧主干完整存于 `backup-v0139-main-20261016`。
 - **env 只有两项，且都有本机实测依据**：`STRATA_BF16_TC=1`（预填 **+22.6%**）、`STRATA_SELECT_SIMT=1`（预填 **+22.4%**）。
   （`STRATA_GR_V3` 已于 2026-10-16 **删除**：Turing 上被引擎自己拒绝、是空操作，见 `OPT` §9.19-§9.21。）
-- **主部署模型**：`sc117-abliterated-iq3_s`（IQ3_S 原生 pack）；另有 **Swift**（`start_iqs3_swift.sh`）和 **qwen**（`start_iq3s.sh`）。
+- **主部署模型**：`sc117-abliterated-iq3_s`（IQ3_S 原生 pack）；另有 **Swift**（`start_iqs3_swift.sh`）。
+  （原 **qwen** 部署的模型 `~/models/qwen-IQ3_S` 已于 2026-10-16 **删除** ✓（78 GB，与 abliterated 版功能重合 ✓）
+  → `strata-qwen-*.json` 与 `start_iq3s.sh` / `start_iq3s_512k.sh` **已不可用** ✓，见 [`IQ3_S-NOTES.md`](IQ3_S-NOTES.md)。）
 - **硬件**：2× RTX 2080 Ti 22G（Turing **sm_75**）、93 GiB RAM、SATA SSD、CUDA 12.8 / gcc-13。
 - **服务**：`./start_iq3s_117.sh`，端口 **8000**，API key `llama_local`。
 - **回退**：见 §12（旧分支 + 旧引擎 + 配置备份，三条都在）。
