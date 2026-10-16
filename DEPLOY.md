@@ -202,7 +202,7 @@ cp -f build/strata engine/strata
 | `engine/strata`、`engine/strata-vision` | 本地编译的引擎（sm_75） |
 | `build/`、`build-vision/` | CMake 构建目录 |
 | `strata-sc117-iq3_s.json`、`strata-swift-iq3_s.json`（+ sc117 的 `-pleram` 变体）| 配置（gitignore；见 §3）|
-| `mtp-rt/` | MTP 目录（**multi 草稿词表** + 软链到 `Strata-data/mtp/rt`）；en 备份 `draft_vocab.bin.en.bak` |
+| `mtp-rt/` | MTP 目录（**multi 草稿词表** + 软链到 `Strata-data/mtp/rt`）；en 备份 `draft_vocab.bin.en.bak`。**⚠️ `Strata-data/mtp/rt/`（787 MB）是运行必需的** ✓（Swift 经软链读它 ✓）—— **不要删** ✗ |
 | `data/expert-profile.bin` | 专家 profile |
 | `.bench/` | 基准脚本/请求/结果 |
 | `engine-bak-0139/` | **唯一的引擎回退备份** ✓（其余 `engine-bak-*` 已于 2026-10-16 删除 ✗）|
