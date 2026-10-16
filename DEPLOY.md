@@ -193,3 +193,18 @@ prefill 路径（`return cc < 75 ? 1 : 0`），本机因此 **prefill 掉 ~13–
 - 本分支 = `origin/main`（v0.1.39）+ **#742/#743**（开放 PR）+ 本地文档。
 - 上游合并 #742/#743 后：`git rebase origin/main` 时 `--skip` 掉它们。
 - 上游出新版本时的完整同步步骤见 [`MERGE-NOTES.md`](MERGE-NOTES.md) 与 [`LOCAL-DELTAS.md`](LOCAL-DELTAS.md)。
+
+## 11. PCIe 链路（2026-10-16 排查，**重要**）
+
+**症状**：预填从 1500–1740 掉到 470–700（长上下文 −40%），引擎/磁盘/CPU/GPU 时钟全部实测排除后，
+发现**引擎自探的 PCIe 带宽**从 **6.7 GB/s 掉到 1.7 GB/s**（Gen3 → Gen1）。
+
+**根因**：`/etc/systemd/system/gpu-pcie-gen3-fix.service`（本意"强制 Gen3"）在 **2026-10-14 12:07** 那次运行时
+把链路**锁在了 Gen1** —— 它的脚本先设 Gen3，再置 `SpeedDis`（Link Control 2 bit 5），而 `SpeedDis` **禁止链路
+自动变速**；若置位瞬间链路正处于空闲的 Gen1，就永久卡在 Gen1（每次开机都有这个竞态）。
+
+**修复**：`sudo systemctl disable --now gpu-pcie-gen3-fix.service`（一次性 ✓，之后开机不会再锁 ✓）
+→ 链路回到 Gen3 ✓ → 预填恢复 **1891.5（100K）/ 1876.8（255K）** ✓
+
+**复查方法**（不需要 root）：看引擎启动日志的 `PCIe probe:` 行，正常应为 **6.7 GB/s**；
+若读到 **1.7 GB/s** 就是坏链路。空闲时 `nvidia-smi` 报的 `pcie.link.gen.current=1` 是 ASPM 正常行为，**不能**用它判断。
