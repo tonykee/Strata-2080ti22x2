@@ -192,7 +192,7 @@ cp -f build/strata engine/strata
 | MTP 草稿词表 | 英文 40525 | **多语言 106299**（见 `MTP-VOCAB.md`） |
 
 - **回退分支**：`batch-559-646`（v0.1.38+补丁）或 `port-v0134`。
-- **回退引擎**：`engine-bak-opt/strata-v0138-batch559`。
+- **回退引擎**：~~`engine-bak-opt/strata-v0138-batch559`~~（该备份已于 2026-10-16 删除 ✗）；**当前回退见 §12** ✓。
 - **GitHub**：`main` = 本版本；旧版在 `v0.1.38-legacy`。
 
 ## 9. 非 git 资源（换目录/重装时要单独带）
@@ -205,7 +205,7 @@ cp -f build/strata engine/strata
 | `mtp-rt/` | MTP 目录（**multi 草稿词表** + 软链到 `Strata-data/mtp/rt`）；en 备份 `draft_vocab.bin.en.bak` |
 | `data/expert-profile.bin` | 专家 profile |
 | `.bench/` | 基准脚本/请求/结果 |
-| `engine-bak-opt/`、`engine-bak-*`、`old-local-backup/` | 回退用备份 |
+| `engine-bak-0139/` | **唯一的引擎回退备份** ✓（其余 `engine-bak-*` 已于 2026-10-16 删除 ✗）|
 
 ## 10. 上游同步
 
@@ -241,7 +241,11 @@ cp -f build/strata engine/strata
 
 - **GitHub**：`main` 与 `v0.1.43-2080ti` 同指新主干；旧主干在 `backup-v0139-main-20261016`（远端另有 `v0.1.39-2080ti`）。
 - **引擎二进制**：`engine/strata` = 主树在 `v0.1.43-2080ti` 上的构建（md5 `46f6434fefa4`）；
-  回退用旧引擎在 `engine-bak-0139/strata`。
+  回退用旧引擎在 **`engine-bak-0139/strata`（唯一保留的引擎备份 ✓）**。
+- **已清理**（2026-10-16）：`engine-bak-0131/0134/0138/opt/pr593575/pre-1741/pre-pwguard/test`（756 MB）、
+  qwen / Q2_0 / Swift-IQ3_XXS 的配置·脚本·pack、`mtp-multi/`。
+  ⚠️ 历史文档（`MERGE-NOTES.md` / `PREFILL-PORT.md` / `V0139-MIGRATION.md` / `LOCAL-DELTAS.md`）里
+  提到的 `engine-bak-0131`、`engine-bak-opt` 等路径**已不存在** ✗。
 
 ## 13. 调优账本（全部本机实测）
 
