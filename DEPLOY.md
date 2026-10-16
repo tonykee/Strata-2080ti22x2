@@ -12,8 +12,9 @@
 - **env 只有两项，且都有本机实测依据**：`STRATA_BF16_TC=1`（预填 **+22.6%**）、`STRATA_SELECT_SIMT=1`（预填 **+22.4%**）。
   （`STRATA_GR_V3` 已于 2026-10-16 **删除**：Turing 上被引擎自己拒绝、是空操作，见 `OPT` §9.19-§9.21。）
 - **主部署模型**：`sc117-abliterated-iq3_s`（IQ3_S 原生 pack）；另有 **Swift**（`start_iqs3_swift.sh`）。
-  （原 **qwen** 部署的模型 `~/models/qwen-IQ3_S` 已于 2026-10-16 **删除** ✓（78 GB，与 abliterated 版功能重合 ✓）
-  → `strata-qwen-*.json` 与 `start_iq3s.sh` / `start_iq3s_512k.sh` **已不可用** ✓，见 [`IQ3_S-NOTES.md`](IQ3_S-NOTES.md)。）
+  （原 **qwen** / **Q2_0** / **Swift-IQ3_XXS** 三个部署已于 2026-10-16 **全部清除** ✓：
+  模型 `~/models/qwen-IQ3_S`（78 GB）、各自的配置 / 启动脚本 / pack 一并删除 ✓ ——
+  只留 **117** 与 **Swift-IQ3_S** 两套 ✓。详见 [`IQ3_S-NOTES.md`](IQ3_S-NOTES.md)。）
 - **硬件**：2× RTX 2080 Ti 22G（Turing **sm_75**）、93 GiB RAM、SATA SSD、CUDA 12.8 / gcc-13。
 - **服务**：`./start_iq3s_117.sh`，端口 **8000**，API key `llama_local`。
 - **回退**：见 §12（旧分支 + 旧引擎 + 配置备份，三条都在）。
@@ -28,14 +29,15 @@
 | RAM | **93 GiB**（2026-10-08 从 61 GiB 升级；4 条混插：2×16 Juhor + 2×32 Cuso，其中一条 2400 2R Hynix → 全通道按 2400 跑，带宽实测 ~32 GB/s） |
 | 系统盘 | WDC WD Blue SATA SSD（~547 MB/s） |
 | CUDA / 编译器 | CUDA 12.8 / gcc-13 |
-| 模型 | `/home/likan/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` |
-| pack | `/home/likan/Strata-data/packs/swift-iq3_xxs` |
+| 模型 | `~/models/sc117-iq3_s`（主，80 GB）／`~/models/swift-IQ3_S`（备，79 GB）；视觉共用 `~/models/mmproj` |
+| pack | `~/Strata-data/packs/sc117_iq3_s`（主）／`swift-iq3_s`（备）|
 
 ## 2. 启动 / 停止
 
 ```sh
 cd ~/strata
-./start_iq3.sh                      # 端口 8000
+./start_iq3s_117.sh                 # 主部署（sc117），端口 8000
+./start_iqs3_swift.sh               # 备部署（Swift），端口 8000
 # 验证
 curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer llama_local' \
   http://127.0.0.1:8000/v1/models   # 期望 200（首次约 2 分钟）
@@ -47,8 +49,8 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
 ## 3. 配置文件
 
 > 三个配置都被 `.gitignore` 忽略（含绝对路径），需单独维护。
-> **主部署** = `strata-sc117-iq3_s.json`（`./start_iq3s_117.sh`）；另有 `strata-swift-iq3_s.json`、`strata-qwen-iq3_s.json`。
-> 下面以 **sc117** 为例（Swift / qwen 只是 pack/native/mtp 路径不同，**env 三项完全一样**）：
+> **主部署** = `strata-sc117-iq3_s.json`（`./start_iq3s_117.sh`）；备部署 = `strata-swift-iq3_s.json`（`./start_iqs3_swift.sh`）。
+> 下面以 **sc117** 为例（Swift 只是 pack/native/mtp 路径不同，**env 完全一样**）：
 
 ```jsonc
 {
@@ -199,7 +201,7 @@ cp -f build/strata engine/strata
 |---|---|
 | `engine/strata`、`engine/strata-vision` | 本地编译的引擎（sm_75） |
 | `build/`、`build-vision/` | CMake 构建目录 |
-| `strata-sc117-iq3_s.json`、`strata-swift-iq3_s.json`、`strata-qwen-iq3_s.json` | 配置（gitignore；见 §3）|
+| `strata-sc117-iq3_s.json`、`strata-swift-iq3_s.json`（+ sc117 的 `-pleram` 变体）| 配置（gitignore；见 §3）|
 | `mtp-rt/` | MTP 目录（**multi 草稿词表** + 软链到 `Strata-data/mtp/rt`）；en 备份 `draft_vocab.bin.en.bak` |
 | `data/expert-profile.bin` | 专家 profile |
 | `.bench/` | 基准脚本/请求/结果 |
