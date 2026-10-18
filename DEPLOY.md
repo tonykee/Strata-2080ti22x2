@@ -106,7 +106,7 @@ cmake --build build --target strata -j8
 cp -f build/strata engine/strata
 ```
 
-> 实测：138/138 目标、0 error（约 40 分钟，`-j8`）；产物 md5 `46f6434fefa4`（2026-10-16）。
+> 实测：**153/153** 目标、0 error（约 40 分钟，`-j8`）；产物 md5 `b24708ac8e39`（2026-10-18，v0.1.45）。
 
 > 视觉编码器 `engine/strata-vision` 是独立 CMake 工程（`tools/vision`），沿用旧部署的即可；
 > 需要时按 `MERGE-NOTES.md §6` 重编。
