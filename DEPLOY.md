@@ -1,4 +1,4 @@
-# 部署说明（2× RTX 2080 Ti 22G · **v0.1.43**）
+# 部署说明（2× RTX 2080 Ti 22G · **v0.1.45**）
 
 > 本文档描述 **`~/strata` 主部署**的完整状态：版本、配置、启动、编译、实测、回退。
 > **逐项实测账本见 [`OPT-2026-10.md`](OPT-2026-10.md)**（§9.x 最新，含每次 A/B 的数字与结论）。
@@ -6,10 +6,12 @@
 
 ## 0. 一句话（2026-10-16 迁移后）
 
-- **引擎**：上游 **v0.1.43** + **#1821**（Turing int8 K/V 寄存器预取）+ **pw 补丁**（`--pipeline-windows` 与 `--batch` 共存）+ **#743**（Turing 长 prompt top-k）。
-- **分支**：`v0.1.43-2080ti` = 上游 **`v0.1.43` 标签** + 4 个提交；**`main` 与 GitHub 都指这里**。
-  上游历史与旧分支**无关**（不是 merge，是让主干指向它）→ 旧主干完整存于 `backup-v0139-main-20261016`。
-- **env 只有两项，且都有本机实测依据**：`STRATA_BF16_TC=1`（预填 **+22.6%**）、`STRATA_SELECT_SIMT=1`（预填 **+22.4%**）。
+- **引擎**：上游 **v0.1.45**（2026-10-17 升级）+ **pw 补丁**（`--pipeline-windows` 与 `--batch` 共存）。
+  #1821 与 #743 已被上游吸收 ✓，**不再需要本地移植** ✓。
+- **分支**：`v0.1.45-2080ti` = 上游 **`v0.1.45` 标签** + pw + 本地文档；**`main` 与 GitHub 都指这里**。
+  旧主干完整存于 `backup-v0143-main-20261018`（v0.1.43 线）与 `backup-v0139-main-20261016`（v0.1.39 线）。
+- **env 三项，全部有本机实测依据**：`STRATA_BF16_TC=1`（预填 **+22.6%**）、`STRATA_SELECT_SIMT=1`（预填 **+22.4%**）、
+  **`STRATA_SM75_PERF=1`**（**上游 0.1.45 的 Turing 内核系列** ✓ 解码 **+4.9%**、预填 **+6.9%**，见 §5 与 §13）。
   （`STRATA_GR_V3` 已于 2026-10-16 **删除**：Turing 上被引擎自己拒绝、是空操作，见 `OPT` §9.19-§9.21。）
 - **主部署模型**：`sc117-abliterated-iq3_s`（IQ3_S 原生 pack）；另有 **Swift**（`start_iqs3_swift.sh`）。
   （原 **qwen** / **Q2_0** / **Swift-IQ3_XXS** 三个部署已于 2026-10-16 **全部清除** ✓：
@@ -81,14 +83,16 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
   "api_key": "llama_local",
   "env": {
     "STRATA_BF16_TC": "1",           // ★ 必需，见 §5（预填 +22.6%）
-    "STRATA_SELECT_SIMT": "1"        // ★ 必需，见 §5（预填 +22.4%）
+    "STRATA_SELECT_SIMT": "1",       // ★ 必需，见 §5（预填 +22.4%）
+    "STRATA_SM75_PERF": "1"          // ★ v0.1.45 的 Turing 内核系列，见 §5（解码 +4.9%、预填 +6.9%）
   }
 }
 ```
 
 ## 4. 编译（从源码）
 
-v0.1.43 把 llama.cpp 放在 `third_party/llama.cpp`（已就位）→ 用 `-DSTRATA_GGML_DIR` 指过去即可复用。
+v0.1.45 的布局是 **`third_party/ggml`**（只有版本号）→ CMake 会**自己拉取** pin 的 llama.cpp（配置阶段约 90 s，
+需要网络 ✓）。**不要**传 `-DSTRATA_GGML_DIR`（那是 v0.1.43 布局的用法 ✗）。
 
 ```sh
 cd ~/strata
@@ -119,7 +123,11 @@ cp -f build/strata engine/strata
 - `BF16_TC`：**会改变数值**（FP16 舍入；上游文档记 2080 Ti prompt +15~18%，本机量到 +22.6%）；对解码无影响。
 - `SELECT_SIMT`：**v0.1.43 起默认走 warp 核**（上游文档称其为"pre-sm_80 的默认"），长 prompt 上慢约 **7 倍**
   （`block_scores` 内核 21.05 s → 0.03 s）→ 不设它，100K 预填会掉到 1600 上下。
-- 两者叠加正是上游文档推荐的**最优组合**（见 `docs/OLDER_GPUS.md` 的 Quadro RTX 8000 实测表）。
+- **`STRATA_SM75_PERF=1`（v0.1.45 新增 ★）**：打开上游为 **sm_75 写的整套内核**
+  （PR #2069-#2072 / #2081 / #2091-#2093 / #2145-#2146 / #2220-#2223 / #1821 ✓）——
+  **作者在 RTX 2080 Ti 上实测**，源码声称**逐位 bitwise** ✓，上游团队**没有 sm_75 卡** ✗ 所以默认关闭 ✓。
+  本机四臂对照实测（见 §13 与 `OPT` §9.24）：**解码 +4.9%** ✓、**100K 预填 +6.9%** ✓。
+- 三者叠加正是上游文档推荐的**最优组合**（见 `docs/OLDER_GPUS.md` 的 Quadro RTX 8000 实测表）。
 - 另有 `STRATA_GR_V3` **已于 2026-10-16 删除**：Turing 上被引擎自己拒绝（`gr_parity` 非确定，#375），
   是空操作，见 `OPT` §9.19-§9.21。
 
@@ -209,10 +217,10 @@ cp -f build/strata engine/strata
 
 ## 10. 上游同步
 
-- **本分支 = 上游 `v0.1.43` 标签 + 4 个提交**（#1821 / pw 补丁 / #743 / 本地文档）→ **与上游同源**，
-  所以近期上游 PR 能**直接 cherry-pick**（实测 #2689 在 v0.1.43 上零冲突，见 `OPT` §9.11）。
-- 旧主干（v0.1.39，落后上游 2174 提交）存于 `backup-v0139-main-20261016`：它碰核心文件时处处撞"提交链"，
-  只作历史与回退用。
+- **本分支 = 上游 `v0.1.45` 标签 + pw 补丁 + 本地文档** → **与上游同源**，
+  近期上游 PR 能**直接 cherry-pick** ✓；#1821 与 #743 已在上游 ✓（**不再需要本地移植** ✓）。
+- **升级到 v0.1.45 时只带了 pw 一个补丁** ✓（`--pipeline-windows 2` 与 `--batch 2` 共存 ✗ 上游仍拒绝 ✓）。
+- 更早的主干（v0.1.43 / v0.1.39）分别存于 `backup-v0143-main-20261018` 与 `backup-v0139-main-20261016`。
 - 同步上游新版本：`git fetch origin` 后 `git rebase <新标签>`，`--skip` 掉已在上游的提交。
   详细步骤见 [`MERGE-NOTES.md`](MERGE-NOTES.md) 与 [`LOCAL-DELTAS.md`](LOCAL-DELTAS.md)。
 
@@ -235,12 +243,13 @@ cp -f build/strata engine/strata
 
 | 要回退什么 | 怎么做 |
 |---|---|
-| **整个引擎回旧主干** | `git checkout backup-v0139-main-20261016` → 按 §4 重建 → `cp -f build/strata engine/strata` |
-| **只换回旧引擎二进制** | `cp -f engine-bak-0139/strata engine/strata`（md5 `aa34de41` = v0.1.39 主干）|
-| **配置** | 每份都有备份：`.bak-v0139`（迁移前）、`.bak-pre-v0143`（上 v0.1.43 前）、`.bak-pre-grv3del`（删 GR_V3 前）|
+| **整个引擎回 v0.1.43** | `git checkout backup-v0143-main-20261018` → 按 §4 重建 → `cp -f build/strata engine/strata` |
+| **只换回 v0.1.43 引擎** | `cp -f engine-bak-v0143/strata engine/strata`（md5 `46f6434fefa4`）|
+| **只换回 v0.1.39 引擎** | `cp -f engine-bak-0139/strata engine/strata`（md5 `aa34de41`）|
+| **配置** | 每份都有备份：`.bak-v0139` / `.bak-pre-v0143` / `.bak-pre-grv3del` / `.bak-pre-park2` / `.bak-pre-slots2` / **`.bak-pre-sm75`** |
 
-- **GitHub**：`main` 与 `v0.1.43-2080ti` 同指新主干；旧主干在 `backup-v0139-main-20261016`（远端另有 `v0.1.39-2080ti`）。
-- **引擎二进制**：`engine/strata` = 主树在 `v0.1.43-2080ti` 上的构建（md5 `46f6434fefa4`）；
+- **GitHub**：`main` 与 `v0.1.45-2080ti` 同指主干；旧主干在 `backup-v0143-main-20261018`（v0.1.43）与 `backup-v0139-main-20261016`（v0.1.39）。
+- **引擎二进制**：`engine/strata` = 主树在 `v0.1.45-2080ti` 上的构建；
   回退用旧引擎在 **`engine-bak-0139/strata`（唯一保留的引擎备份 ✓）**。
 - **已清理**（2026-10-16）：`engine-bak-0131/0134/0138/opt/pr593575/pre-1741/pre-pwguard/test`（756 MB）、
   qwen / Q2_0 / Swift-IQ3_XXS 的配置·脚本·pack、`mtp-multi/`。
@@ -257,6 +266,9 @@ cp -f build/strata engine/strata
 | 迁移到 v0.1.43 | 解码 **+5.1~10.1%**；预填持平/略好 | 已迁 ✓ |
 | Swift 迁移 | 解码 **+2.4%**；预填持平 | 已迁 ✓ |
 | `--pipeline-windows 2`（pw 补丁）| 单请求 **+17%** | 已用 ✓ |
+| **升级到 v0.1.45** | 解码 **+6.0%** ✓（65.5 → 69.4，两轮顺序一致 ✓）| 已升 ✓ |
+| **`STRATA_SM75_PERF=1`**（0.1.45 的 Turing 系列）| 解码 **+4.9%** ✓、预填 **+6.9%** ✓ | 已开 ✓ |
+| ↳ 合计（v0.1.43 → v0.1.45+SM75）| 解码 **+11.1%** ✓、预填 **+4.7%** ✓ | ✓ |
 | **扩到 384K（yarn 1.5）** | 解码 **无可测代价** ✓（70.8 vs 71.1，四臂对照 ✓）| 已加 2 个配置 ✓ |
 | **`--prompt-cache-every 8192`** | 10 万 prompt **秒回**（100084/100116 reused ✓）| 已用 ✓ |
 | **`--conversation-cache-slots 2`** | 与 `--batch 2` 匹配 ✓，驱逐 70+ → 1~2 ✓ | 已用 ✓ |
