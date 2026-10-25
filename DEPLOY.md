@@ -66,14 +66,17 @@ pkill -9 -f '[s]trata/engine/strata '; pkill -9 -f '[s]trata/engine/strata-visio
     "--prefill", "auto",
     "--spec", "4", "--spec-min-p", "0.65",
     "--mtp", "/home/likan/models/sc117-iq3_s/strata/rt",
-    "--max-context", "262144",
+    "--max-context", "524288",            // 512K = yarn 2.0 × 原生 262144，见 §7 / OPT §9.25
+    "--rope-scaling", "yarn", "--rope-scale", "2.0", "--yarn-orig-ctx", "262144",
     "--kv", "int8", "--kv-resident", "32768",
     "--vision",
     "--vram-reserve-mib", "700",
     "--trim-stage-weights",
     "--suffix-draft", "8",
-    "--conversation-cache-mib", "16384",  // 会话停车（parking）：2026-10-11 由 8192 调大，见 §7
-    "--conversation-cache-slots", "4",
+    "--prompt-cache-every", "8192",
+    "--conversation-cache-mib", "24576",        // 停车池“预算”（不预分配），见 §7 / §14
+    "--conversation-cache-slots", "6",          // 停车槽位数（2026-10-25 由 2 改 6）
+    "--conversation-cache-min-tokens", "65536", // ★ 2026-10-25：<64K 的会话（子任务）不占槽，见 §14
     "--batch", "2", "--batch-groups", "2", // 两个 agent 真并行
     "--pipeline-windows", "2"              // pw 补丁：与 --batch 共存（单请求 +17%），见 §7
   ],
@@ -284,3 +287,98 @@ cp -f build/strata engine/strata
 
 > 逐项数字、方法与结论见 [`OPT-2026-10.md`](OPT-2026-10.md) §9.x。
 > 当前 GPU 利用率 **79% / 88%**、功耗 **137 / 140 W**（上限 160 W，**不动**）→ 这台机器基本吃满了。
+
+## 14. 会话缓存（停车池）—— "切 agent / 开子任务后要重填很久"的排查与配置（2026-10-25）
+
+> 结论先说：**这不是 bug** ✓。会话缓存按 **prompt 前缀** 匹配，而"切 agent / 开子任务 / 新开会话"都会产生**新的前缀**；
+> 再加上停车槽位是**全局 LRU**（不区分主任务/子任务），所以小会话会把大会话挤掉 ✗。配置见本节末尾。
+
+### 14.1 两个池子，别混
+
+| 参数 | 管什么 | 现在 |
+|---|---|---|
+| `--batch 2` | **同时运行**的请求数（显存里的 session，每个 0.76 GiB/卡）| 2 ✓ |
+| `--conversation-cache-slots 6` | **停车位**：宿主内存里能放几份会话快照 | 6 ✓ |
+| `--conversation-cache-mib 24576` | 停车池的**内存预算**（不是预分配；不用不占）| 24 GiB ✓ |
+| `--conversation-cache-min-tokens 65536` | **有资格停车的最小会话长度** | 64K ✓ |
+| `--max-context 524288` | **每个会话各自**的上下文上限（**不共享** ✓）| 512K ✓ |
+
+`--batch 2` 完全不限制停车数 ✗ —— 子任务一个一个跑也会各自停进池子 ✓。
+
+### 14.2 为什么两个 agent 也会重读
+
+1. **匹配是逐 token 前缀**（`conversations.best(ids)` → `parked.tokens`）：切 agent 换掉 **system prompt** → **第 0 个 token 就不同** → 匹配 0 → 整段重读 ✗。
+2. **驱逐是全局 LRU**（`evict_oldest()`，"最久未用"）：**不区分是谁的主任务** ✗。子任务跑的时候主任务闲置 → 主任务最"老" → 先被挤掉 ✗。
+3. **层切分禁用 borrow** ✗：上游有"从别的 parked 会话借共享前缀"的机制（专为 sibling subagent 设计），但 `borrow` 要求单卡（`stages.empty()`），我们 2 卡用不了 ✗。
+4. `--conversation-cache-min-tokens` 默认 **0 = 任何会话都停** ✗ —— 一个 **4.7K** 的旁路会话就能顶掉 12 万的主任务 ✗。
+
+**日志证据**（真实发生）：
+
+```
+parked 120,686 tokens ... parked=2 bytes=3.49 GB  evictions=22
+parked   4,777 tokens ... parked=2 bytes=1.07 GB  evictions=24   ← 12 万的快照被释放
+prompt 120,717 tokens = 0 reused + 120,717 read in 67,385 ms     ← 下一轮整段重读 67 s
+```
+
+### 14.3 现在的配置与理由
+
+```jsonc
+"--conversation-cache-mib", "24576",
+"--conversation-cache-slots", "6",
+"--conversation-cache-min-tokens", "65536",
+```
+
+**历史数据**（两份 512K 日志，592 次停车 / 100 次恢复）：
+
+| 会话大小 | 停车次数 | 被恢复次数 | 恢复挽回 token |
+|---|---:|---:|---:|
+| <16K | 253 ✗ | 24 | 144K |
+| 16–32K | 40 | 4 | 95K |
+| 32–64K | 65 | 7 | 357K |
+| 64–128K | 91 ✓ | 17 | 1,645K |
+| >128K | 143 ✓ | 48 | **12,480K** |
+
+→ **<64K 占 60% 的停车动作，却只有 4% 的回报** ✗ → 它们就是"挤掉主任务"的元凶 ✓
+→ 所以 **64K 以下不给停车资格** ✓，池子只装主任务 → **主任务再也不会被子任务顶掉** ✓
+
+**实测验证**（2026-10-25）：
+
+| 请求 | 结果 |
+|---|---|
+| 主任务 80,078 tok | `parked 80083`（2.05 GB）✓ |
+| 子任务 40,069 tok | `skip parking (below the 65536 minimum)` → **不占槽** ✓ |
+| 子任务 70,071 tok | `parked 70077`（1.90 GB）✓ |
+| 回主任务 | `restored 80073 tokens in 171 ms` → **1.12 s** ✓ |
+
+### 14.4 代价（明确的取舍，不是副作用）
+
+- **<64K 的会话不再停车** ✗：
+  - **一次性**子任务 → **零成本** ✓（跑完就结束，没有"下次"）
+  - **多轮**小会话 → 每轮重读：16K≈9 s、32K≈18 s、48K≈26 s ✗
+  - 历史里 8~64K 的请求占 **8%** ✓、恢复只有 35 次 ✓ → 代价可接受 ✓
+- **内存不会变多** ✓：只存 ≥64K 的快照（本来就是你的主任务），小快照反而省掉 ✓；
+  另有 24 GiB 硬预算 + `--conversation-cache-min-free-mib 2560`（RAM 不够时 `skip parking`，不会 OOM ✓）。
+- **400K 级别** ✗：每份快照 **8.4 GB**，93 GB 只放得下 2 个 ✓；4 个需要 128 GB ✓。
+
+### 14.5 回滚 / 调参
+
+| 想要 | 改 `--conversation-cache-min-tokens` |
+|---|---|
+| 多轮小会话也快 ✓（代价：可能挤主任务 ✗）| `16384` |
+| 折中 ✓ | `32768` |
+| **主任务绝对优先（当前）** ✓ | **`65536`** |
+
+改完必须重启服务（`./start_iq3s_117.sh` / `./start_iqs3_swift.sh`）✓；备份在 `strata-*-512k.json.bak-slots2` ✓。
+
+### 14.6 自检
+
+```bash
+# 实时状态：slots / parked / evictions / parks / restores
+curl -s -H "Authorization: Bearer llama_local" http://127.0.0.1:8000/metrics \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['conversation_cache'])"
+
+# 每次请求的复用：只看 reused 与 read
+grep -a "prompt .* tokens = " strata-*-512k.log | tail -20
+```
+
+判断标准 ✓：`evictions` **不涨** ✓、`bytes` 不突然大幅下降 ✓、长会话的 `reused` ≈ `prompt` ✓。
