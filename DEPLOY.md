@@ -179,6 +179,8 @@ cp -f build/strata engine/strata
   → 2026-10-11 由 8192 调大到 **16384**（按双并发峰值 8.8 GiB + 余量；`--conversation-cache-slots 4` 全满需 17.6 GiB，
   只在 4 个满长会话同时停车时才需要）。该参数是**预算不是预分配**（不用不占 RAM），
   `--conversation-cache-min-free-mib 2560` 兜底（RAM 不够时 skip parking，不会 OOM）。
+    > ⚠️ **2026-10-25 已更新** ✓：现为 **`--conversation-cache-mib 24576` + `slots 6` + `min-tokens 65536`** ✓
+    > —— 上面「16384 / slots 4」是历史记录 ✓；改的原因是**小会话（子任务）会占槽并挤掉主任务** ✗，详见 §14。
 - **已结案（原“待 96 GB 后复测”那两条）**：93 GiB 下 parking 稳定生效；2×200K 并发回访复用率 100%，
   不再出现 v0.1.39 的整段重读（2×100K 总 wall 207s）。
 - **双并发缺 MTP：已移植上游 `--batch-mtp` 并实测 → 本机不划算，未采纳**（分支 `port-batch-mtp`）。
