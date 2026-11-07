@@ -27,6 +27,25 @@ still has 12,670 experts (90.7 GB) on one NUMA part, so TP2 improves decode only
 prefill (host all-reduce, no NVLink peer path yet). CUDA1 finished with 4,622 MiB free, so the
 capacity balance is not filling the second card completely.
 
+## 2026-11-07: CPU-lane enable attempt (not adopted)
+
+Enabled `STRATA_NATIVE_EXPERTS`, changed the namespace alias to `strata::kernels::cpu`, added
+`native_gu_rows_split` / `native_down_rows_split`, raised `kNativeActBytes` / `kNativeHBytes` to
+8192 / 4096 (DeepSeek's 5120 / 2304), and allowed IQ1_S own rows for one token
+(`DS4_IQ1S_ROWS=1`, `DS4_IQ_OWN=1`). It builds and runs, but:
+
+| Config | Decode (128 tok) | 3.5K prefill | CPU lane |
+|---|---:|---:|---:|
+| CPU lane off (current best) | 27.71 tok/s | 185.5 tok/s | ~26 ms/token |
+| CPU lane enabled | 17.70 tok/s | 39.8 tok/s | ~46 ms/token |
+
+The Strata IQ1_S rows were not selected (the file is the pre-#695 scalar form; its one-token check/row
+timing did not win), and the separate gate/up bases fell through to a scalar split path. This is worse
+than the generic CPU lane, so the enablement was reverted. The branch keeps #5246 only.
+
+Next step for this part: port Maya #695's vectorized IQ1_S rows and its split-base CPU lane, rather
+than merely enabling the old Strata rows. That is the 1-2 day piece estimated earlier.
+
 ## Next, in order
 
 1. **CPU IQ1_S lane** — Strata's `ds4_iq_cpu.cpp` has the vectorized IQ1_S rows but
