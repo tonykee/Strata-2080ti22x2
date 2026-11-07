@@ -131,7 +131,7 @@ numbers are quoted.
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
-(TP2, `--experts 4`, 8192 chunks, Engram 2048, CPU IV1_S own rows, peer AR on where available) and
+(TP2, `--experts 4`, 8192 chunks, Engram 2048, CPU IQ1_S own rows, peer AR on where available) and
 leaves cache substitution off. Examples:
 
 ```sh
