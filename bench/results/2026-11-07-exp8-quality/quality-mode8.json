@@ -1,0 +1,182 @@
+{
+ "model": "swift-1.5-iq3_s",
+ "ctx": 393216,
+ "results": [
+  {
+   "tag": "math",
+   "text": "1720",
+   "wall_s": 0.7374603748321533,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 31,
+    "prompt_ms": 602.3,
+    "prompt_per_token_ms": 19.429,
+    "prompt_per_second": 51.5,
+    "predicted_n": 5,
+    "predicted_ms": 127.6,
+    "predicted_per_token_ms": 25.52,
+    "predicted_per_second": 39.2,
+    "draft_n": 4,
+    "draft_n_accepted": 4
+   },
+   "finish": "stop",
+   "checks": {
+    "answer_1720": true
+   }
+  },
+  {
+   "tag": "logic",
+   "text": "No, the premises do not guarantee that roses are among the specific subset of flowers that fade quickly.",
+   "wall_s": 0.586829662322998,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 40,
+    "prompt_ms": 286.0,
+    "prompt_per_token_ms": 7.15,
+    "prompt_per_second": 139.9,
+    "predicted_n": 21,
+    "predicted_ms": 293.4,
+    "predicted_per_token_ms": 13.971,
+    "predicted_per_second": 71.6,
+    "draft_n": 13,
+    "draft_n_accepted": 12
+   },
+   "finish": "stop",
+   "checks": {
+    "no": true
+   }
+  },
+  {
+   "tag": "code_merge",
+   "text": "```python\ndef merge_sorted(a, b):\n    result = []\n    i, j = 0, 0\n    while i < len(a) and j < len(b):\n        if a[i] <= b[j]:\n            result.append(a[i])\n            i += 1\n        else:\n            result.append(b[j])\n            j += 1\n    result.extend(a[i:])\n    result.extend(b[j:])\n    return result\n```",
+   "wall_s": 2.065669059753418,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 38,
+    "prompt_ms": 216.5,
+    "prompt_per_token_ms": 5.697,
+    "prompt_per_second": 175.5,
+    "predicted_n": 101,
+    "predicted_ms": 1842.3,
+    "predicted_per_token_ms": 18.241,
+    "predicted_per_second": 54.8,
+    "draft_n": 79,
+    "draft_n_accepted": 73
+   },
+   "finish": "stop",
+   "checks": {
+    "runs": true
+   }
+  },
+  {
+   "tag": "code_pal",
+   "text": "```python\ndef is_palindrome(s):\n    cleaned = ''.join(c.lower() for c in s if c.isalnum())\n    return cleaned == cleaned[::-1]\n```",
+   "wall_s": 0.8124399185180664,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 43,
+    "prompt_ms": 209.7,
+    "prompt_per_token_ms": 4.877,
+    "prompt_per_second": 205.1,
+    "predicted_n": 39,
+    "predicted_ms": 596.0,
+    "predicted_per_token_ms": 15.282,
+    "predicted_per_second": 65.4,
+    "draft_n": 33,
+    "draft_n_accepted": 26
+   },
+   "finish": "stop",
+   "checks": {
+    "runs": true
+   }
+  },
+  {
+   "tag": "json",
+   "text": "{\n  \"name\": \"QuantumText\",\n  \"version\": \"2.4.1\",\n  \"features\": [\n    \"Real-time syntax highlighting\",\n    \"AI-powered code completion\",\n    \"Cloud-based collaboration\"\n  ]\n}",
+   "wall_s": 1.0044240951538086,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 46,
+    "prompt_ms": 244.2,
+    "prompt_per_token_ms": 5.309,
+    "prompt_per_second": 188.4,
+    "predicted_n": 58,
+    "predicted_ms": 753.3,
+    "predicted_per_token_ms": 12.988,
+    "predicted_per_second": 77.0,
+    "draft_n": 38,
+    "draft_n_accepted": 37
+   },
+   "finish": "stop",
+   "checks": {
+    "json": true
+   }
+  },
+  {
+   "tag": "zh",
+   "text": "PCIe（Peripheral Component Interconnect Express）是一种高速串行计算机扩展总线标准，用于连接主板与显卡、固态硬盘等高性能外设，以实现高带宽和低延迟的数据传输。",
+   "wall_s": 0.8915202617645264,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 18,
+    "prompt_ms": 149.9,
+    "prompt_per_token_ms": 8.328,
+    "prompt_per_second": 120.1,
+    "predicted_n": 37,
+    "predicted_ms": 734.9,
+    "predicted_per_token_ms": 19.862,
+    "predicted_per_second": 50.3,
+    "draft_n": 22,
+    "draft_n_accepted": 18
+   },
+   "finish": "stop",
+   "checks": {
+    "pcie": true
+   }
+  },
+  {
+   "tag": "translate",
+   "text": "敏捷的棕色狐狸跳过懒狗。",
+   "wall_s": 0.3325977325439453,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 28,
+    "prompt_ms": 188.4,
+    "prompt_per_token_ms": 6.729,
+    "prompt_per_second": 148.6,
+    "predicted_n": 9,
+    "predicted_ms": 137.4,
+    "predicted_per_token_ms": 15.267,
+    "predicted_per_second": 65.5,
+    "draft_n": 6,
+    "draft_n_accepted": 6
+   },
+   "finish": "stop",
+   "checks": {
+    "fox_dog": true
+   }
+  },
+  {
+   "tag": "needle20k",
+   "text": "X7-42Q",
+   "wall_s": 11.431467056274414,
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 19986,
+    "prompt_ms": 11305.6,
+    "prompt_per_token_ms": 0.566,
+    "prompt_per_second": 1767.8,
+    "predicted_n": 7,
+    "predicted_ms": 98.9,
+    "predicted_per_token_ms": 14.129,
+    "predicted_per_second": 70.8,
+    "draft_n": 6,
+    "draft_n_accepted": 6
+   },
+   "finish": "stop",
+   "checks": {
+    "code": true
+   }
+  }
+ ]
+}

@@ -43,6 +43,12 @@ runs, `STRATA_DECODE_TIMING=1`:
 - Layer-split 22 is not a win on this box (24/24 stays).
 - The local configs already carry `"STRATA_EXP_MODE": "8"`.
 
+**Quality check (2026-11-07, [full results](bench/results/2026-11-07-exp8-quality/README.md)).**
+Eight greedy prompts with mode 4 and mode 8, thinking off, same config: math, logic, two Python
+functions (compiled and tested), JSON, Chinese, EN→ZH and a 20K-token needle. **Both modes passed
+8/8; all eight responses were byte-for-byte identical text**, including the 20K needle and the
+generated code. This is a task-level smoke test, not a logit/KL or bitwise proof.
+
 ## Validation on the 2080 Ti box (X99, 2x RTX 2080 Ti 22G, 220 W)
 
 - Built `strata` and `strata-vision` with CUDA 12.8, `sm_75`, Release.
