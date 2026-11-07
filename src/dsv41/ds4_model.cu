@@ -2855,6 +2855,92 @@ struct Model::Impl {
                 a[(size_t) m].peer_recv = a[(size_t) (1 - m)].recv;
                 a[(size_t) m].peer_flags = a[(size_t) (1 - m)].flags;
             }
+            if (std::getenv("DS4_PEER_AR_SELFTEST") != nullptr) {
+                // One controlled row through the host transport and one through the peer transport.  The
+                // values are byte patterns, so the expected F32 sum is made on the host too: this catches
+                // transport/synchronization mistakes, not just a tolerance drift.
+                const size_t n = std::min<size_t>(stride, (size_t) 1 << 16);
+                float* hx[2] = {nullptr, nullptr};
+                float* px[2] = {nullptr, nullptr};
+                bool test_ok = n >= 4 && (n & 3u) == 0;
+                for (int m = 0; m < 2 && test_ok; ++m) {
+                    const int id = devs[(size_t) G.mem[(size_t) m]].id;
+                    cudaSetDevice(id);
+                    test_ok = cudaMalloc((void**) &hx[m], n * sizeof(float)) == cudaSuccess &&
+                              cudaMalloc((void**) &px[m], n * sizeof(float)) == cudaSuccess &&
+                              cudaMemset(hx[m], m == 0 ? 0x3f : 0x40, n * sizeof(float)) == cudaSuccess &&
+                              cudaMemset(px[m], m == 0 ? 0x3f : 0x40, n * sizeof(float)) == cudaSuccess;
+                }
+                auto run_transport = [&](bool peer, float* x[2]) {
+                    std::memset(G.arb.flags, 0, (size_t) G.arb.nm * G.arb.slots * 32 * sizeof(unsigned));
+                    for (int m = 0; m < 2; ++m) {
+                        Dev& d = devs[(size_t) G.mem[(size_t) m]];
+                        cudaSetDevice(d.id);
+                        if (peer) {
+                            cudaMemset(a[(size_t) m].flags, 0, 2 * kPeerArBlocks * kPeerArFlagStride * sizeof(unsigned));
+                            cudaMemset(a[(size_t) m].error, 0, sizeof(unsigned));
+                            test_ok = test_ok && allreduce_peer(x[m], (int) n, a[(size_t) m], m, 1, d.st);
+                        } else {
+                            cudaMemsetAsync(d.xcnt, 0, sizeof(unsigned), d.st);
+                            allreduce(x[m], (int) n, G.arb, m, 1, d.xcnt, d.st);
+                        }
+                    }
+                    for (int m = 0; m < 2; ++m) {
+                        cudaSetDevice(devs[(size_t) G.mem[(size_t) m]].id);
+                        test_ok = test_ok && cudaStreamSynchronize(devs[(size_t) G.mem[(size_t) m]].st) == cudaSuccess;
+                    }
+                };
+                if (test_ok) run_transport(false, hx);
+                if (test_ok) run_transport(true, px);
+                std::vector<float> rh[2], rp[2];
+                for (int m = 0; m < 2 && test_ok; ++m) {
+                    rh[m].resize(n);
+                    rp[m].resize(n);
+                    cudaSetDevice(devs[(size_t) G.mem[(size_t) m]].id);
+                    test_ok = cudaMemcpy(rh[m].data(), hx[m], n * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess &&
+                              cudaMemcpy(rp[m].data(), px[m], n * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess;
+                }
+                unsigned expected_bits = 0;
+                if (test_ok) {
+                    const uint32_t in0 = 0x3f3f3f3fu, in1 = 0x40404040u;
+                    float f0, f1;
+                    std::memcpy(&f0, &in0, sizeof(f0));
+                    std::memcpy(&f1, &in1, sizeof(f1));
+                    const float sum = f0 + f1;
+                    std::memcpy(&expected_bits, &sum, sizeof(expected_bits));
+                }
+                int mismatch = 0, first = -1;
+                unsigned first_h = 0, first_p = 0;
+                for (int m = 0; m < 2 && test_ok; ++m)
+                    for (size_t i = 0; i < n; ++i) {
+                        const unsigned hb = [&] { unsigned u; std::memcpy(&u, &rh[m][i], 4); return u; }();
+                        const unsigned pb = [&] { unsigned u; std::memcpy(&u, &rp[m][i], 4); return u; }();
+                        if (hb != expected_bits || pb != expected_bits) {
+                            if (mismatch == 0) { first = (int) i; first_h = hb; first_p = pb; }
+                            ++mismatch;
+                        }
+                    }
+                std::fprintf(stderr, "PEER_AR_SELFTEST gpu=%d,%d floats=%zu host_ok=%d peer_ok=%d mismatches=%d "
+                                     "expected=%08x first=%d host=%08x peer=%08x\n",
+                             devs[(size_t) G.mem[0]].id, devs[(size_t) G.mem[1]].id, n, mismatch == 0, mismatch == 0,
+                             mismatch, expected_bits, first, first_h, first_p);
+                for (int m = 0; m < 2; ++m) {
+                    if (hx[m]) cudaFree(hx[m]);
+                    if (px[m]) cudaFree(px[m]);
+                }
+                std::memset(G.arb.flags, 0, (size_t) G.arb.nm * G.arb.slots * 32 * sizeof(unsigned));
+                for (int m = 0; m < 2; ++m) {
+                    cudaSetDevice(devs[(size_t) G.mem[(size_t) m]].id);
+                    cudaMemset(a[(size_t) m].flags, 0, 2 * kPeerArBlocks * kPeerArFlagStride * sizeof(unsigned));
+                    cudaMemset(a[(size_t) m].error, 0, sizeof(unsigned));
+                }
+                if (!test_ok || mismatch != 0) {
+                    release();
+                    std::fprintf(stderr, "ds4: peer prefill all-reduce disabled after self-test failure on GPU%d/GPU%d\n",
+                                 devs[(size_t) G.mem[0]].id, devs[(size_t) G.mem[1]].id);
+                    continue;
+                }
+            }
             for (int m = 0; m < 2; ++m) {
                 Dev& d = devs[(size_t) G.mem[(size_t) m]];
                 d.allocs.push_back(a[(size_t) m].recv);

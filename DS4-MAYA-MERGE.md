@@ -99,9 +99,12 @@ First measured run, v2 pack, TP2, CPU lane:
 
 The peer run's generated sequence differed from the host runs, and the decode number is not comparable:
 the host was under heavy CPU/kcompactd load during the later runs (CPU lane 49-56 ms/token against 21 ms
-in the earlier measurement), so decode timings and possibly the cache timing differ. Peer setup itself
-is exact F32 (`__fadd_rn`, member order as `ar_sum_kernel`), but a same-state parity test is still needed
-before this can be called quality-safe. Keep it opt-in; do not make it the default yet.
+in the earlier measurement), so decode timings and the dynamic expert-cache timing differ. `init_peer_ar`
+now has `DS4_PEER_AR_SELFTEST=1`, which runs one 65536-float row through the host and peer transports and
+compares every bit to the host-computed sum. Result: **host_ok=1 peer_ok=1 mismatches=0**. With the
+expert cache disabled and dspark off, peer and host generated the same 8 tokens
+(`455,2502,344,260,1606,10021,9162,943`), so the earlier sequence difference was cache timing, not the
+peer arithmetic. Keep it opt-in; do not make it the default yet.
 
 ## Next, in order
 
