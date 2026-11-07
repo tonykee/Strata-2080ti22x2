@@ -128,6 +128,22 @@ Note: the host is still in a degraded state after repeated 90 GB CPU-lane copies
 against 21 ms in the earlier clean-state 31.38 tok/s run). A host reboot is needed before the final
 numbers are quoted.
 
+## Launcher
+
+`start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
+(TP2, `--experts 4`, 8192 chunks, Engram 2048, CPU IV1_S own rows, peer AR on where available) and
+leaves cache substitution off. Examples:
+
+```sh
+./start_ds4_v2_2080ti.sh --serve
+./start_ds4_v2_2080ti.sh --ids 1,2,3 --n 32
+DS4_CACHE_SUB_RATIO=0.1 ./start_ds4_v2_2080ti.sh --serve   # approximate; changes answers
+DS4_HIP_PEER_AR=0 ./start_ds4_v2_2080ti.sh --serve          # host prefill transport
+```
+
+`DS4_HIP_PEER_AR=1` is the script default because it is bitwise checked; the engine still falls back
+to the host transport when peer access or the setup is unavailable.
+
 ## Next, in order
 
 1. **CPU IQ1_S lane** — Strata's `ds4_iq_cpu.cpp` has the vectorized IQ1_S rows but
