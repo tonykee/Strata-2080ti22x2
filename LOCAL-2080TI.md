@@ -49,6 +49,22 @@ functions (compiled and tested), JSON, Chinese, EN→ZH and a 20K-token needle. 
 8/8; all eight responses were byte-for-byte identical text**, including the 20K needle and the
 generated code. This is a task-level smoke test, not a logit/KL or bitwise proof.
 
+### Other switches tried on 2026-11-07 (not adopted)
+
+All on top of the daily config + mode 8; same short-code/list/100K runs:
+
+| Switch | Short code | Short list | 100K prefill / decode | Verdict |
+|---|---:|---:|---:|---|
+| `STRATA_MTP_STAGE0=1` | 117.8 | 101.3 | 2537 / **76.7** | short list +4%, long −23%: no |
+| `STRATA_PA_V2T=1` + `STRATA_SPLIT_MTP_BATCH=1` | 117.9 | 97.3 | **2668** / 87.5 | prefill +4.4%, decode lower: no |
+| `STRATA_ATTN_DAILY=1` + `ATTN_MERGE_V2=1` + `EXCHANGE_ROTATE=1` + `ADAPT_EVICT_SYNC=1` + `ADAPT_LAG=1` | 118.1 | 97.5 | 2379 / **70.6** | short unchanged, long much worse: no |
+| `STRATA_GDN_TC=2` (port of #4876) | 118.0 | 97.3 | 2275 / **64.0** | no gain, long worse: no |
+| `--layer-split 22` (24/24 stays) | 127.4 peak | 100.3 | 86.6 | only peak short code +1%: no |
+
+Single runs each; the long-context differences are large enough (10–35%) that thermal noise does
+not explain them. The daily profile keeps only `STRATA_EXP_MODE=8`; the peak profile additionally
+drops batch/suffix for short single-task work.
+
 ## Validation on the 2080 Ti box (X99, 2x RTX 2080 Ti 22G, 220 W)
 
 - Built `strata` and `strata-vision` with CUDA 12.8, `sm_75`, Release.
