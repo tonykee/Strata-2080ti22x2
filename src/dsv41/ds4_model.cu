@@ -24,6 +24,7 @@
 #include "ds4_gguf.cuh"
 #include "ds4_iq.cuh"
 #include "ds4_gguf_cpu.hpp"
+#include "ds4_cache_sub_config.hpp"
 #include "ds4_kernels.cuh"
 #include "ds4_os.hpp"
 #include "ds4_pcie.cuh"
@@ -1076,6 +1077,7 @@ struct Model::Impl {
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
+    cache_sub::Config substitution;   // DS4_CACHE_SUB_RATIO: approximate decode routing (off by default)
 #if !defined(STRATA_USE_HIP)
     std::atomic<bool> peer_ar_failed{false};
 #endif
@@ -2963,6 +2965,13 @@ struct Model::Impl {
 
     bool load(const Options& opt, std::string& err) {
         o = opt;
+        if (!cache_sub::parse(std::getenv("DS4_CACHE_SUB_RATIO"), std::getenv("DS4_CACHE_SUB_N"),
+                              std::getenv("DS4_CACHE_SUB_NORM"), std::getenv("DS4_CACHE_SUB_RISK_BUDGET"),
+                              substitution, err)) return false;
+        if (substitution.ratio > 0)
+            std::fprintf(stderr, "ds4: APPROXIMATE cache substitution: ratio %.3g, top %d, reference normalization, "
+                                 "mass budget %.3g; changes answers and depends on cache residency\n",
+                         substitution.ratio, substitution.candidates, substitution.budget);
         const double t0 = now_ms();
         if (!pk.load(o.pack, err)) return false;
         g.from(pk);
@@ -14622,9 +14631,17 @@ struct Model::Impl {
                 route_ahead(gl, nx->gate_bias, nx->n_exp, m, T, reqs + slot, (a - 1) * kAhead1, s);
                 na[a - 1] = m;
             }
+            CacheSub sub;
+            const CacheSub* substitute = nullptr;
+            if (substitution.ratio > 0 && T <= 16 && !l.mtp) {
+                sub.ratio = substitution.ratio;
+                sub.budget = substitution.budget;
+                sub.candidates = substitution.candidates;
+                substitute = &sub;
+            }
             route_publish(d.glog, l.gate_bias, l.n_exp, l.k_exp, T, g.route_scale, l.vram_tab, d.x, D, d.ridx, d.rw,
                           d.plan_ptr, lead ? reqs + slot : nullptr, sq, s, l.gate_bias_vl, l.mtp ? 0u : wp.vl, na[0],
-                          na[1]);
+                          na[1], substitute);
             if (!mv(d, {job(l.s1, d.x, d.sg, T, D, FF), job(l.s3, d.x, d.su, T, D, FF)}, err)) return false;
             swiglu(d.sg, d.su, T * FF, g.lim, d.sh, s);
             if (!mv(d, {job(l.s2, d.sh, d.sh_out, T, FF, D)}, err)) return false;

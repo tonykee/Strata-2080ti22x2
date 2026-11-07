@@ -106,6 +106,28 @@ expert cache disabled and dspark off, peer and host generated the same 8 tokens
 (`455,2502,344,260,1606,10021,9162,943`), so the earlier sequence difference was cache timing, not the
 peer arithmetic. Keep it opt-in; do not make it the default yet.
 
+## 2026-11-08: cache-aware expert substitution (opt-in, WIP)
+
+Ported Maya #821's `cache_sub::choose` / config and a CUDA route kernel. When `DS4_CACHE_SUB_RATIO=0.1`
+(`DS4_CACHE_SUB_N=12`, `DS4_CACHE_SUB_RISK_BUDGET=0.6`), generation windows up to 16 tokens may replace
+low-score non-strongest picks by resident alternatives; the resident test is the layer's VRAM table
+(`vram_tab != 0`). Default is zero: native routing, no extra work. This is approximate and changes answers.
+
+A/B on the current degraded host, v2, TP2, CPU lane, 128 tokens, dspark on, `--mmap-experts off`:
+
+| Config | Decode | CPU lane |
+|---|---:|---:|
+| native | 18.41 tok/s | 44.07 ms/token |
+| `DS4_CACHE_SUB_RATIO=0.1` | **34.49 tok/s** | **17.56 ms/token** |
+
+Prefill was unchanged (39.9 vs 40.2 tok/s in that state). The generated 128-token sequence happened to
+be the same on this repetitive prompt, but that is not a quality proof: other prompts and the 30-task
+quality set still need to be run before any adoption. Keep it opt-in; not the default.
+
+Note: the host is still in a degraded state after repeated 90 GB CPU-lane copies (CPU lane 44-96 ms/token
+against 21 ms in the earlier clean-state 31.38 tok/s run). A host reboot is needed before the final
+numbers are quoted.
+
 ## Next, in order
 
 1. **CPU IQ1_S lane** — Strata's `ds4_iq_cpu.cpp` has the vectorized IQ1_S rows but
