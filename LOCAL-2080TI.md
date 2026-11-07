@@ -37,14 +37,19 @@ until this branch passes the same validation.
 
 ## Run it
 
-The local config (ignored by git) is `strata-swift-latest.json`; it points at
-`/home/likan/strata-latest/engine/strata` and `engine/strata-vision`.
+The local configs (ignored by git) are `strata-swift-latest.json` and
+`strata-sc117-latest.json`; they point at `/home/likan/strata-latest/engine/strata` and
+`engine/strata-vision`.
 
 ```bash
 cd /home/likan/strata-latest
-./.venv/bin/python serve/server.py --engine strata \
-  --config strata-swift-latest.json --port 8000
+./start_iqs3_swift.sh     # Swift 1.5 IQ3_S
+./start_iq3s_117.sh       # SC117 abliterated IQ3_S
+./stop.sh                 # stops this branch only, not ~/strata
 ```
+
+The start scripts refuse to run when port 8000 is already in use, so stop the production tree
+(`/home/likan/strata/stop.sh`) first if it is running.
 
 Do not switch `~/strata`'s production config to this engine until the image path and the full
 SC117/Swift conversation tests have run.
