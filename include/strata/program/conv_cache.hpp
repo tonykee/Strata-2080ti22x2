@@ -40,6 +40,31 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap) {
     return v;
 }
 
+/// LOCAL (2080 Ti): the root is not always the chain's FIRST item.  A system prompt that ends past the first
+/// periodic chunk end leaves grid checkpoints ahead of its own checkpoint (#2228, #3090).  The overloads below
+/// take the caller's root index; without it, item 0 is the pin, as before.
+/// The length of the system-prompt root checkpoint, read from the conversation itself: the first turn boundary
+/// after token 0, kept only when it lies at or past `min_root` AND a later boundary exists.  0 = none.
+inline int64_t root_length(const int64_t* ids, size_t n_ids, int64_t turn_token, int64_t min_root) {
+    if (turn_token < 0 || min_root <= 0) return 0;
+    for (size_t i = 1; i < n_ids; ++i)
+        if (ids[i] == turn_token) {
+            if ((int64_t) i < min_root) return 0;
+            for (size_t j = i + 1; j < n_ids; ++j)
+                if (ids[j] == turn_token) return (int64_t) i;
+            return 0;
+        }
+    return 0;
+}
+
+/// The chain index holding `root_len` tokens, or 0 when none does (item 0 is then the pin, as before).
+inline size_t root_index(const int64_t* lens, size_t n, int64_t root_len) {
+    if (root_len > 0)
+        for (size_t i = 0; i < n; ++i)
+            if (lens[i] == root_len) return i;
+    return 0;
+}
+
 /// --prompt-cache-tail: the extra checkpoint near the prompt's end (`tail[i]`) is the first to go - it serves
 /// only a branch of the last request - unless it is the newest item (the one just saved: `n > 1` and the newest
 /// stamp).  With no such item this is the plain policy.  Never the root.
@@ -74,6 +99,28 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     v = 1;                           // all pinned: the oldest of them (never the root, index 0)
     for (size_t i = 2; i < n; ++i)
         if (stamps[i] < stamps[v]) v = i;
+    return v;
+}
+
+/// LOCAL (2080 Ti): eviction_victim with a caller-named root.  The root is never the victim, and item 0 rotates
+/// like any other item; `root` 0 (or out of range) is the policy above, unchanged.
+inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, const bool* tail, const bool* pinned,
+                              size_t root) {
+    if (root == 0 || root >= n) return eviction_victim(stamps, n, cap, tail, pinned);
+    if (cap < 2 || n < 2) return 0;
+    size_t newest = 0;
+    for (size_t i = 1; i < n; ++i)
+        if (stamps[i] > stamps[newest]) newest = i;
+    if (tail != nullptr)
+        for (size_t i = 0; i < n; ++i)
+            if (tail[i] && i != root && !(pinned != nullptr && pinned[i]) && i != newest) return i;
+    size_t v = n;                    // the least recently used among the non-root, unpinned items
+    for (size_t i = 0; i < n; ++i)
+        if (i != root && !(pinned != nullptr && pinned[i]) && (v == n || stamps[i] < stamps[v])) v = i;
+    if (v != n) return v;
+    v = 0;                           // all pinned: the oldest of them, never the root (root > 0 here)
+    for (size_t i = 1; i < n; ++i)
+        if (i != root && stamps[i] < stamps[v]) v = i;
     return v;
 }
 
@@ -116,6 +163,28 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
         if (v != n) return v;
     }
     return eviction_victim(stamps, n, cap, tail, pinned);
+}
+
+/// LOCAL (2080 Ti): spread_victim with the caller-named root, as above: the root is never dropped, wherever it
+/// sits.  `root` 0 (or out of range) is the policy above, unchanged.
+inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t n, int64_t cap, const bool* tail,
+                            const bool* pinned, size_t root) {
+    if (root == 0 || root >= n) return spread_victim(lens, stamps, n, cap, tail, pinned);
+    if (n >= 3 && cap >= 2) {
+        auto candidate = [&](size_t i) { return i != root && !(pinned != nullptr && pinned[i]); };
+        if (tail != nullptr)
+            for (size_t i = 1; i + 1 < n; ++i)
+                if (tail[i] && candidate(i)) return i;
+        size_t v = n;
+        double best = 0;
+        for (size_t i = 1; i + 1 < n; ++i) {
+            if (!candidate(i)) continue;
+            const double gap = double(lens[i + 1] - lens[i - 1]) / double(lens[n - 1] - lens[i - 1]);
+            if (v == n || gap < best) { v = i; best = gap; }
+        }
+        if (v != n) return v;
+    }
+    return eviction_victim(stamps, n, cap, tail, pinned, root);
 }
 
 }  // namespace strata::program::conv_cache
