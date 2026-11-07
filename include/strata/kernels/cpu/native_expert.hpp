@@ -9,14 +9,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace strata::kernels::cpu {
 
 /// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292).
-inline constexpr size_t kNativeActBytes = 4096;
+inline constexpr size_t kNativeActBytes = 8192;
 /// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292).
-inline constexpr size_t kNativeHBytes = 1024;
+inline constexpr size_t kNativeHBytes = 4096;
 
 /// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
 enum class NativeArithmetic { Default, WindowInvariant };
@@ -65,6 +66,13 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
+
+/// The same rows when gate and up have their own bases (a tensor-parallel member or a dsv41 pack).
+void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const uint8_t* up_base,
+                          const void* const* act, int nt, float* const* ff, int r0, int r1,
+                          float swiglu_limit = std::numeric_limits<float>::infinity());
+void native_down_rows_split(const NativeFmt& f, const uint8_t* down_base, const void* const* hq, int nt,
+                            float* const* out, int r0, int r1);
 
 /// Same per-token result as the corresponding legacy nt=1 call on this build and CPU.
 /// Kernels that already satisfy this contract retain their grouped execution.

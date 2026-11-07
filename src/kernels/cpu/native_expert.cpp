@@ -592,9 +592,37 @@ void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const voi
     native_gu_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, act, nt, ff, r0, r1);
 }
 
-void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
-                                float* const* out, int r0, int r1) {
-    native_down_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, hq, nt, out, r0, r1);
+void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const uint8_t* up_base,
+                          const void* const* act, int nt, float* const* ff, int r0, int r1,
+                          float swiglu_limit) {
+    if (r1 <= r0) return;
+    if (!std::isfinite(swiglu_limit) && up_base == gate_base + f.up_off) {
+        native_gu_rows(f, gate_base, act, nt, ff, r0, r1);
+        return;
+    }
+    const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
+    const int n = (int) f.n_embd;
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* gr = gate_base + (size_t) r * f.gu_row;
+        const uint8_t* ur = up_base + (size_t) r * f.gu_row;
+        for (int t = 0; t < nt; ++t) {
+            float g = 0.f, u = 0.f;
+            dot(n, &g, 0, gr, 0, act[t], 0, 1);
+            dot(n, &u, 0, ur, 0, act[t], 0, 1);
+            if (std::isfinite(swiglu_limit)) {
+                g = std::fmin(g, swiglu_limit);
+                u = std::fmin(std::fmax(u, -swiglu_limit), swiglu_limit);
+            }
+            ff[t][r] = (g / (1.f + std::exp(-g))) * u;
+        }
+    }
+}
+void native_down_rows_split(const NativeFmt& f, const uint8_t* down_base, const void* const* hq, int nt,
+                            float* const* out, int r0, int r1) {
+    NativeFmt f0 = f;
+    f0.down_off = 0;
+    f0.tail_off = 0;
+    native_down_rows(f0, down_base, hq, nt, out, r0, r1);
 }
 
 }  // namespace strata::kernels::cpu

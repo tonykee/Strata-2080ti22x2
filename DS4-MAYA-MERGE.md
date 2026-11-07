@@ -60,6 +60,28 @@ model call path from Maya, not just the row function. Reverted; branch keeps #52
 Next step for this part: port the whole Maya CPU-lane path, not only #695's row kernel; that is the
 1-2 day piece estimated earlier.
 
+## 2026-11-07: full #695 CPU-lane port (works)
+
+Replaced Strata's pre-#695 `ds4_iq_cpu.cpp` with Maya's post-#695 file (the vectorized IQ1_S rows),
+added `ds4_iq512_kern.inc`, the split-base `native_gu_rows_split` / `native_down_rows_split`, and
+raised `kNativeActBytes` / `kNativeHBytes` to 8192 / 4096. The CPU lane now reports:
+
+```text
+ds4: CPU lane iq1_s rows (4 tokens): native 515 us, ours 210 us -> ours
+```
+
+v2 pack, TP2, tuned flags:
+
+| Config | Decode 128 tok | 3.5K prefill | CPU lane |
+|---|---:|---:|---:|
+| #5246 TP2 only | 27.71 tok/s | 185.5 tok/s | ~26 ms/token |
+| **#5246 + #695 CPU lane** | **31.38 tok/s** | 185.8 tok/s | **21.3 ms/token** |
+
+That is +13.2% decode from the CPU-lane port; the IQ1_S rows alone are 2.45x faster than the native
+rows on this Xeon. Prefill is unchanged (the remaining prefill gap to Maya is the missing peer
+all-reduce, not the CPU lane). Maya is still 42-49 / ~1000; cache substitution and peer prefill AR
+are the next missing pieces.
+
 ## Next, in order
 
 1. **CPU IQ1_S lane** — Strata's `ds4_iq_cpu.cpp` has the vectorized IQ1_S rows but
