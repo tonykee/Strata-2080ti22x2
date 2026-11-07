@@ -43,8 +43,22 @@ The Strata IQ1_S rows were not selected (the file is the pre-#695 scalar form; i
 timing did not win), and the separate gate/up bases fell through to a scalar split path. This is worse
 than the generic CPU lane, so the enablement was reverted. The branch keeps #5246 only.
 
-Next step for this part: port Maya #695's vectorized IQ1_S rows and its split-base CPU lane, rather
-than merely enabling the old Strata rows. That is the 1-2 day piece estimated earlier.
+A second attempt ported Maya #695's vectorized `iq1s_rows_avx2` (F16C, 16-block segments) into
+`src/dsv41/ds4_iq_cpu.cpp`, plus the split-base declarations. It builds and runs, but:
+
+| Pack | CPU lane | Decode 128 tok | 3.5K prefill |
+|---|---|---:|---:|
+| Maya-XS-v2, CPU lane enabled | ~46 ms/token | 17.70 | 39.8 |
+| Maya-XS-v1, CPU lane enabled | ~58 ms/token | 14.57 | 75.9 |
+| no CPU-lane enable (current best) | ~26 ms/token | **27.71** | **185.5** |
+
+The own IQ1_S rows still were not selected by the dsv41 call path (no `CPU lane iq1_s rows` line);
+the engine's `iq_cpu_fmt`/CPU-lane branch does not reach them in this pack, so the split-base path
+dominates. This is not a drop-in port: it needs the newer `ds4_iq_cpu` + `ds4_cpu_prepare_rows` +
+model call path from Maya, not just the row function. Reverted; branch keeps #5246 only.
+
+Next step for this part: port the whole Maya CPU-lane path, not only #695's row kernel; that is the
+1-2 day piece estimated earlier.
 
 ## Next, in order
 
