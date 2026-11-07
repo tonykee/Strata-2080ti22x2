@@ -23,6 +23,26 @@ until this branch passes the same validation.
 - The old tree's extra `conv_cache_test.cpp` cases and the one-line `/v1/models` server test are
   pending; the code builds and the existing test passes.
 
+## Decode-step optimization found on 2026-11-07
+
+`STRATA_EXP_MODE=8` (the video's mode 8 expert layout) is a real win on sm_75 here, even though
+0.1.57's default for a Turing card is mode 4.  Swift 384K/int8, temperature 0, thinking off, 5 warm
+runs, `STRATA_DECODE_TIMING=1`:
+
+| Config | short code | short list | 100K decode |
+|---|---:|---:|---:|
+| production-like (batch 2, suffix-draft 8, spec-min-p 0.65) | 110.3 tok/s / 32.8 ms | 88.4 / 26.4 ms | 82.6 tok/s |
+| + `STRATA_EXP_MODE=8` | **117.9 / ~29 ms** | **97.3 / ~26 ms** | **99.4** |
+| peak profile: no batch, suffix-draft 0, spec-min-p 0.5, mtp-hnorm stream, + mode 8 | **126.1** | **102.9** | 90.4 |
+| peak profile + layer-split 22 | 127.4 | 100.3 | 86.6 |
+
+- `STRATA_EXP_MODE=8` is the one to keep in the daily config: it helps short and 100K, and keeps
+  batch/suffix-draft.
+- The peak profile is only for single-task short peaks; at 100K the suffix draft's acceptance is
+  worth more than its overhead (90.4 against 99.4 for the production-like config).
+- Layer-split 22 is not a win on this box (24/24 stays).
+- The local configs already carry `"STRATA_EXP_MODE": "8"`.
+
 ## Validation on the 2080 Ti box (X99, 2x RTX 2080 Ti 22G, 220 W)
 
 - Built `strata` and `strata-vision` with CUDA 12.8, `sm_75`, Release.
