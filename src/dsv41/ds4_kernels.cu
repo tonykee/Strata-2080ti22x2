@@ -1935,6 +1935,68 @@ __global__ void __launch_bounds__(kThreads) ar_sum_kernel(float* x, int n4, cons
 }
 
 
+#if !defined(STRATA_USE_HIP)
+// CUDA's globaltimer counts nanoseconds; the peer all-reduce's bounded wait uses it.
+__device__ __forceinline__ unsigned long long peer_wall_clock64() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+// Two-rank peer all-reduce. Each block pushes its slice into the peer's receive slot, publishes its
+// completion flag after a system fence, then waits for the peer's block to do the same and sums the
+// peer's row beside its own.  The arithmetic is ar_sum_kernel's: member 0 + member 1, __fadd_rn.
+__global__ void __launch_bounds__(kThreads) ar_peer_kernel(float* x, int n4, PeerAr a, int mi, unsigned seq) {
+    __shared__ int ready;
+    if (threadIdx.x == 0) ready = (*reinterpret_cast<volatile unsigned*>(a.error) & 1u) == 0;
+    __syncthreads();
+    if (!ready) return;
+    const int slot = int(seq & 1u);
+    float4* peer = reinterpret_cast<float4*>(a.peer_recv + size_t(slot) * a.stride);
+    const float4* received = reinterpret_cast<const float4*>(a.recv + size_t(slot) * a.stride);
+    for (int q = blockIdx.x * blockDim.x + threadIdx.x; q < n4; q += gridDim.x * blockDim.x)
+        peer[q] = reinterpret_cast<const float4*>(x)[q];
+    __threadfence_system();
+    __syncthreads();
+    const size_t fi = (size_t(slot) * kPeerArBlocks + blockIdx.x) * kPeerArFlagStride;
+    if (threadIdx.x == 0) {
+        *reinterpret_cast<volatile unsigned*>(a.peer_flags + fi) = seq;
+        __threadfence_system();
+        const uint64_t begin = peer_wall_clock64();
+        ready = 1;
+        unsigned observed;
+        while (int((observed = *reinterpret_cast<const volatile unsigned*>(a.flags + fi)) - seq) < 0) {
+            const uint64_t elapsed = peer_wall_clock64() - begin;
+            if (elapsed >= a.timeout_ticks) {
+                if ((atomicOr(a.error, 1u) & 1u) == 0 && a.failure != nullptr) {
+                    a.failure->sequence = seq;
+                    a.failure->observed = observed;
+                    a.failure->block = blockIdx.x;
+                    a.failure->n4 = unsigned(n4);
+                    a.failure->rank = unsigned(mi);
+                    a.failure->elapsed_ticks = elapsed;
+                    a.failure->timeout_ticks = a.timeout_ticks;
+                    a.failure->captured = 1;
+                }
+                ready = 0;
+                break;
+            }
+        }
+        __threadfence_system();
+    }
+    __syncthreads();
+    if (!ready) return;
+    for (int q = blockIdx.x * blockDim.x + threadIdx.x; q < n4; q += gridDim.x * blockDim.x) {
+        const float4 local = reinterpret_cast<const float4*>(x)[q];
+        const float4 remote = ld_fresh(received + q);
+        const float4 left = mi == 0 ? local : remote;
+        const float4 right = mi == 0 ? remote : local;
+        reinterpret_cast<float4*>(x)[q] = make_float4(__fadd_rn(left.x, right.x), __fadd_rn(left.y, right.y),
+                                                    __fadd_rn(left.z, right.z), __fadd_rn(left.w, right.w));
+    }
+}
+#endif
+
 // a thread a (token, value): every stream's value read before any is written
 __global__ void hc_post_inplace_kernel(const float* __restrict__ y, float* h, const float* __restrict__ post,
                                        const float* __restrict__ comb, int dim, int hc) {
@@ -2732,5 +2794,23 @@ void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned
     const int blocks = std::max(1, std::min(64, cdiv(n4, kThreads)));
     strata_ds4_launch(ar_sum_kernel, blocks, kThreads, 0, s, x, n4, a.data, a.stride, a.flags, a.nm, mi, slot, a.slots, seq);
 }
+
+#if !defined(STRATA_USE_HIP)
+bool allreduce_peer(float* x, int n, const PeerAr& a, int mi, unsigned seq, cudaStream_t s) {
+    if (!x || (reinterpret_cast<uintptr_t>(x) & 15u) || n <= 0 || n % 4 || mi < 0 || mi > 1 || !a.recv || !a.peer_recv ||
+        (reinterpret_cast<uintptr_t>(a.recv) & 15u) || (reinterpret_cast<uintptr_t>(a.peer_recv) & 15u) || !a.flags ||
+        !a.peer_flags || !a.error || !a.timeout_ticks || a.stride < size_t(n) || a.stride % 4) return false;
+    const int blocks = std::max(1, std::min(kPeerArBlocks, cdiv(n / 4, kThreads)));
+    ar_peer_kernel<<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
+    return cudaPeekAtLastError() == cudaSuccess;
+}
+
+void peer_ar_preload() {
+    cudaFuncAttributes fa{};
+    (void) cudaFuncGetAttributes(&fa, ar_peer_kernel);
+    (void) cudaFuncGetAttributes(&fa, ar_sum_kernel);
+    (void) cudaGetLastError();
+}
+#endif
 
 }  // namespace strata::ds4

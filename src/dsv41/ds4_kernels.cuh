@@ -320,4 +320,28 @@ struct ArGroup {
 constexpr int kArBlocks = 64;
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s);
 
+#if !defined(STRATA_USE_HIP)
+// CUDA two-rank peer all-reduce: an opt-in prefill transport for one TP2 group. Both ranks own two
+// receive slots in device memory and a flag block each; allreduce_peer pushes this rank's row into the
+// peer's slot, then sums the peer's row once both flags say the call is complete. Exact F32, same bits
+// as allreduce's two-member path.
+constexpr int kPeerArBlocks = 64, kPeerArFlagStride = 32;
+struct PeerArFailure {
+    unsigned captured = 0, sequence = 0, observed = 0, block = 0, n4 = 0, rank = 0;
+    uint64_t elapsed_ticks = 0, timeout_ticks = 0;
+};
+struct PeerAr {
+    float* recv = nullptr;
+    float* peer_recv = nullptr;
+    unsigned* flags = nullptr;
+    unsigned* peer_flags = nullptr;
+    unsigned* error = nullptr;
+    PeerArFailure* failure = nullptr;
+    size_t stride = 0;
+    uint64_t timeout_ticks = 0;   // globaltimer nanoseconds
+};
+bool allreduce_peer(float* x, int n, const PeerAr& a, int mi, unsigned seq, cudaStream_t s);
+void peer_ar_preload();
+#endif
+
 }  // namespace strata::ds4

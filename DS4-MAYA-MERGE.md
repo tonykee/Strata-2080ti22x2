@@ -82,6 +82,27 @@ rows on this Xeon. Prefill is unchanged (the remaining prefill gap to Maya is th
 all-reduce, not the CPU lane). Maya is still 42-49 / ~1000; cache substitution and peer prefill AR
 are the next missing pieces.
 
+## 2026-11-07: CUDA peer prefill all-reduce (opt-in, WIP)
+
+Ported the two-rank peer-VRAM prefill transport to the CUDA build: `ar_peer_kernel` / `allreduce_peer` in
+`ds4_kernels.cu`, `Group::peer_arb`, and a `DS4_HIP_PEER_AR=1` setup after expert placement. Each rank
+allocates two receive slots (320 MiB/rank at the 8192-token chunk) plus flag/error blocks and enables
+peer access in both directions. The chunk path uses it for all three per-layer all-reduces; the host
+transport remains the default and is what an unset or `0` value uses.
+
+First measured run, v2 pack, TP2, CPU lane:
+
+| Config | 3.5K prefill | Decode |
+|---|---:|---:|
+| host prefill transport | 185.8 tok/s | 31.38 tok/s |
+| `DS4_HIP_PEER_AR=1` | **196.2 tok/s** | 27.81 tok/s (noisy) |
+
+The peer run's generated sequence differed from the host runs, and the decode number is not comparable:
+the host was under heavy CPU/kcompactd load during the later runs (CPU lane 49-56 ms/token against 21 ms
+in the earlier measurement), so decode timings and possibly the cache timing differ. Peer setup itself
+is exact F32 (`__fadd_rn`, member order as `ar_sum_kernel`), but a same-state parity test is still needed
+before this can be called quality-safe. Keep it opt-in; do not make it the default yet.
+
 ## Next, in order
 
 1. **CPU IQ1_S lane** — Strata's `ds4_iq_cpu.cpp` has the vectorized IQ1_S rows but
