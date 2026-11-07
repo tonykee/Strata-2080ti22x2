@@ -59,6 +59,7 @@ All on top of the daily config + mode 8; same short-code/list/100K runs:
 | `STRATA_PA_V2T=1` + `STRATA_SPLIT_MTP_BATCH=1` | 117.9 | 97.3 | **2668** / 87.5 | prefill +4.4%, decode lower: no |
 | `STRATA_ATTN_DAILY=1` + `ATTN_MERGE_V2=1` + `EXCHANGE_ROTATE=1` + `ADAPT_EVICT_SYNC=1` + `ADAPT_LAG=1` | 118.1 | 97.5 | 2379 / **70.6** | short unchanged, long much worse: no |
 | `STRATA_GDN_TC=2` (port of #4876) | 118.0 | 97.3 | 2275 / **64.0** | no gain, long worse: no |
+| `STRATA_PIPELINE_SNAP_RING=1` (port of #3944) | 122.8 | 97.6 | 2538 / **89.4** | short code +4%, long −10%: no |
 | `--layer-split 22` (24/24 stays) | 127.4 peak | 100.3 | 86.6 | only peak short code +1%: no |
 
 Single runs each; the long-context differences are large enough (10–35%) that thermal noise does
