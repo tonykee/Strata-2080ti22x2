@@ -1804,7 +1804,7 @@ struct Model::Impl {
         std::lock_guard<std::mutex> lk(prof_mu);
         const bool chunk_sample = prof_chunk;
         bool sample_ok = !prof_failed;
-        double sample_ms[6] = {};
+        double sample_ms[16] = {};
         std::vector<std::pair<int, cudaEvent_t>> last;
         int current_dev = -1;
         if (sample_ok) {
@@ -1843,7 +1843,7 @@ struct Model::Impl {
         }
         if (sample_ok) {
             double* total = chunk_sample ? cprof_ms : st.prof_ms;
-            const int stages = chunk_sample ? 4 : 6;
+            const int stages = chunk_sample ? 11 : 6;
             for (int i = 0; i < stages; ++i) total[i] += sample_ms[i];
             for (const ProfMark& m : prof_marks) prof_pool[(size_t) m.dev].push_back(m.ev);
             prof_marks.clear();
@@ -4890,8 +4890,18 @@ struct Model::Impl {
             for (int m = 0; m < l0.nm; ++m)
                 if (member(l0, m).dev == di) mi = m;
             if (S.cp >= (size_t) P) CK(cudaStreamWaitEvent(c.cs, c.freed[half], 0));
+            // A pinned full RAM copy can be DMA'd from where it lies.  Only batch members without
+            // such a copy go through the pinned staging; the old path staged every expert even when
+            // the copy was already pinned, which made the prompt's DMA read RAM twice.
+            const auto direct_src = [&](int e) -> const uint8_t* {
+                if (!copy_mode || !ram_pinned || NH != 1 || l0.ram.empty() || l0.ram[(size_t) e] < 0) return nullptr;
+                return ram_part[(size_t) l0.ram[(size_t) e]][0];
+            };
+            bool need_stage = false;
+            for (int i = 0; i < bt.n && !need_stage; ++i)
+                need_stage = picked(i) && direct_src(l0.host_list[(size_t) (bt.j0 + i)]) == nullptr;
             uint8_t* sb = nullptr;   // in place: the batch's regions in the part's staging slots
-            if (c.stage != nullptr) {
+            if (c.stage != nullptr && need_stage) {
                 const double t_evt = now_ms();
                 if (S.cp >= (size_t) P) CK(cudaEventSynchronize(c.filled[half]));   // (its last batch's copies out)
                 c.dbg_evt_ms += now_ms() - t_evt;
@@ -4901,6 +4911,7 @@ struct Model::Impl {
                 c.readers->run(bt.n, [&](int i) {
                     if (!picked(i)) return;   // (an expert no row of the chunk routed to)
                     const int e = l0.host_list[(size_t) (bt.j0 + i)];
+                    if (direct_src(e) != nullptr) return;   // (already pinned)
                     if (l0.lay.fmt == gg::kFmtMXFP4 ? !read_mx(l0, e, sb + (size_t) i * c.stage_stride)
                                                     : !pk.read_at(l0.region_file[(size_t) e], l0.region_off[(size_t) e],
                                                                   l0.region_bytes[(size_t) e],
@@ -4925,9 +4936,10 @@ struct Model::Impl {
                     g_skip_count.copied.fetch_add(1, std::memory_order_relaxed);
                 }
                 uint8_t* dst = c.ring + ((size_t) half * (c.ring_n / P) + i) * c.ring_stride;
-                if (!stream_expert(l0, mi, l0.host_list[(size_t) (bt.j0 + i)], dst, c.cs, err,
-                                   sb != nullptr ? sb + (size_t) i * c.stage_stride : nullptr))
-                    return false;
+                const int e = l0.host_list[(size_t) (bt.j0 + i)];
+                const uint8_t* src = direct_src(e);
+                if (src == nullptr && sb != nullptr) src = sb + (size_t) i * c.stage_stride;
+                if (!stream_expert(l0, mi, e, dst, c.cs, err, src)) return false;
                 c.stream_bytes += (double) unit(member(l0, mi));
             }
             c.dbg_dma_ms += now_ms() - t_dma;

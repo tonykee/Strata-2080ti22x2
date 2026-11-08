@@ -295,6 +295,33 @@ likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages-release
 If the helpers stay in the user-writable repository, giving them NOPASSWD would be equivalent to
 granting root (the user could edit the script), so install them with this script instead.
 
+## 2026-11-08: prefill streaming fix (13K 102 -> 451 tok/s)
+
+Two bugs held the prompt path back:
+
+1. `copy_ahead` always read every RAM-copied expert into pinned staging, even when the copy
+   itself was already pinned.  The prompt then moved each expert RAM -> staging -> GPU.  With
+   `DS4_COPY_HUGETLB=1` (arena on 2 MB pages) and the automatic `DS4_COPY_PIN`, the direct
+   DMA path is now used; no staging is needed for a pinned copy.
+2. `DS4_PROF` had a 6-entry local sample array while the chunk profile uses stages 0-10; it
+   overwrote the stack (SIGSEGV).  The array is now 16 entries and the chunk stage count is 11.
+
+Measured on the 13K prompt, v2, TP2, full copy, 96 GB huge pages, `DS4_COPY_PIN=1`,
+`DS4_STORE_GB=0`, peer AR on:
+
+| Config | Prefill |
+|---|---:|
+| before both fixes | 102 tok/s |
+| direct pinned copies | 433 tok/s |
+| + `DS4_ATTN_SLAB=2048` | 449 tok/s |
+| + `DS4_SKIP_UNPICKED=1` | **451 tok/s** |
+
+That is a **4.4x** improvement, and the 3.5K prompt is no longer using the staging path
+either.  Remaining gap to Maya's ~1000 tok/s is in the newer CUDA prefill kernels (attention
+MMA/MMQ paths in Maya v1.1.5x) rather than in the CPU-lane copy; those are a separate port.
+`DS4_ATTN_SLAB=2048` is now in the server config; `DS4_SKIP_UNPICKED=1` stays opt-in (its
+layer-routing wait helps only when a chunk picks few experts).
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
