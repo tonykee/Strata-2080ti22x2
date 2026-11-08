@@ -58,15 +58,16 @@ fi
 # The engine is gone now: return the huge-page pool to normal memory.  If no pool is
 # reserved (for example the start used DS4_HUGEPAGE_GB=0), this needs no sudo at all.
 TOTAL=$(awk '/^HugePages_Total:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
-if [ "${TOTAL:-0}" -gt 0 ]; then
+COMPACT=${DS4_COMPACT_ON_STOP:-0}
+if [ "${TOTAL:-0}" -gt 0 ] || [ "$COMPACT" = 1 ]; then
     if [ "$(id -u)" -eq 0 ]; then
         tools/ds4_hugepages_release.sh
     else
-        echo "releasing the ${TOTAL} huge pages (sudo)..."
+        echo "releasing/compacting host memory (sudo)..."
         sudo tools/ds4_hugepages_release.sh || echo "warning: huge-page release failed; run sudo tools/ds4_hugepages_release.sh" >&2
     fi
 else
-    echo "no reserved huge-page pool to release."
+    echo "no reserved huge-page pool; ordinary THP arena exits without sudo (set DS4_COMPACT_ON_STOP=1 to compact)."
 fi
 
 if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':8000 '; then

@@ -211,6 +211,37 @@ The server is the normal `serve/server.py`; its config is `tools/strata-ds4-v2-2
 substitution off).  The start script writes `.strata-ds4-v2.pid`; the stop script only matches this
 tree's server and engine paths, not production `/home/likan/strata`.
 
+## Clearing the host state after a load
+
+After the process exits, the CPU-lane arena is already unmapped; what can remain is allocator
+fragmentation (THP/order blocks).  `drop_caches` is not the fix for that: it drops file pages, not
+free-page fragmentation.  The useful command is compaction:
+
+```sh
+sudo tools/ds4_compact_memory.sh
+# equivalent:
+sudo sh -c 'sync; echo 1 > /proc/sys/vm/compact_memory'
+```
+
+If a huge-page pool was reserved, release it first (that also compacts):
+
+```sh
+sudo tools/ds4_hugepages_release.sh
+```
+
+`stop_cpu_lane.sh` does the release automatically when a pool exists.  For an ordinary-THP run
+(`DS4_HUGEPAGE_GB=0`), set `DS4_COMPACT_ON_STOP=1` to make stop compact too:
+
+```sh
+DS4_HUGEPAGE_GB=0 DS4_COMPACT_ON_STOP=1 ./stop_cpu_lane.sh
+```
+
+`compact_memory` is best effort: movable user pages (the 90 GB arena) are coalesced back into
+higher-order blocks, but unmovable kernel allocations can still prevent a perfect post-reboot
+layout.  A reboot remains the only absolute reset; compaction normally recovers enough for the next
+THP allocation.  `drop_caches` is a separate, optional operation (`sync; echo 3 > /proc/sys/vm/drop_caches`)
+and mainly makes the next load colder.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
