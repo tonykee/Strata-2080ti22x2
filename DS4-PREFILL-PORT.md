@@ -30,6 +30,9 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
 3. Debug the busy-experts cublas status 13 with a minimal sm_75 GEMM test before
    enabling `DS4_FAT_ROWS`.
 
-The current safe result remains the direct-pinned prefill path: 13K now measures
-**472 tok/s** (variance around 449-472) and 3.5K 374 tok/s with the slab setting,
-on the same 2080 Ti pair.  FAT stays off for TP2 until the member layout is ported.
+The current safe result is **532 tok/s at 13K** after porting Maya's multi-row
+router GEMM (`gemv_f32_rows_kernel`): the FFN mHC + router + sort stage fell from
+9.5 s to 2.9 s.  The remaining profile is experts 17.2 s, sparse attention 14.3 s,
+q_b + rope 3.5 s.  `DS4_ATTN_G` is available for attention heads-per-block A/B
+(4 was slower; 0/8 is the default).  3.5K is ~374 before the router kernel and
+needs a fresh run.  FAT stays off for TP2 until the member layout is ported.

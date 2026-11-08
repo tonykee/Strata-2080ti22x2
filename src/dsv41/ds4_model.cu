@@ -12139,8 +12139,12 @@ struct Model::Impl {
             ar.win = g.win;
             ar.R = l.ratio;
             ar.kcap = g.ix_topk;
+            static const int attn_g = [] {
+                const char* v = std::getenv("DS4_ATTN_G");
+                return v != nullptr ? std::atoi(v) : 0;
+            }();
             sparse_attn(c.q, c.ext, ckv, c.topk + (size_t) a0 * topk_stride(), (int) topk_stride(), ar, l.sink, NHL, HD,
-                        na, 1.0f / std::sqrt((float) HD), c.o, s, kKvFp4, 0, &d.attn_scr);   // (a short last slab)
+                        na, 1.0f / std::sqrt((float) HD), c.o, s, kKvFp4, attn_g, &d.attn_scr);   // (a short last slab)
             prof_mark(d, 9);
             if (a0 == 0 && na == T) dump_sub(d, "o", l.il, p0, T, c.o, (size_t) T * HQ * 4);
             Finish fo;

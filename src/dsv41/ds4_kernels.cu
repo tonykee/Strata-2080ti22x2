@@ -506,6 +506,50 @@ __global__ void __launch_bounds__(kThreads) gemv_f32_kernel(const float* __restr
     if (lane == 0) y[(size_t) t * ldy + row] = acc;
 }
 
+// ... a prompt's rows: a block 8 rows of W for kGemvT tokens, their inputs kGemvK float4s at a time in shared
+// memory.  Each (token, row) sums as the one-token kernel does (a lane's float4s c = lane + 32 j in order, then
+// the warp's sum), so the prompt's router logits keep the token path's bits - with W read once per kGemvT tokens,
+// not once a token (a 4K prompt reads DeepSeek-V4.1's 7.9 MB router 4096 times a layer).
+constexpr int kGemvT = 8, kGemvK = 128;
+static_assert(kGemvK % 32 == 0, "a lane's float4s in the one-token kernel's order");
+__global__ void __launch_bounds__(kThreads) gemv_f32_rows_kernel(const float* __restrict__ W, const float* __restrict__ x,
+                                                                 int n, int k, int T, float* __restrict__ y, int ldy) {
+    __shared__ float4 xs[kGemvT][kGemvK];
+    const int row = blockIdx.x * (kThreads / 32) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, t0 = blockIdx.y * kGemvT, nt = min(kGemvT, T - t0), k4 = k / 4;
+    const float* w = W + (size_t) min(row, n - 1) * k;
+    float acc[kGemvT];
+#pragma unroll
+    for (int t = 0; t < kGemvT; ++t) acc[t] = 0.0f;
+    for (int c0 = 0; c0 < k4; c0 += kGemvK) {
+        const int nc = min(kGemvK, k4 - c0);
+        __syncthreads();
+        for (int i = (int) threadIdx.x; i < kGemvT * kGemvK; i += kThreads) {
+            const int t = i / kGemvK, c = i % kGemvK;
+            if (t < nt && c < nc) xs[t][c] = ((const float4*) (x + (size_t) (t0 + t) * k))[c0 + c];
+        }
+        __syncthreads();
+        for (int c = lane; c < nc; c += 32) {
+            const float4 a = ((const float4*) w)[c0 + c];
+#pragma unroll
+            for (int t = 0; t < kGemvT; ++t) {
+                const float4 b = xs[t][c];
+                acc[t] = fmaf(a.x, b.x, acc[t]);
+                acc[t] = fmaf(a.y, b.y, acc[t]);
+                acc[t] = fmaf(a.z, b.z, acc[t]);
+                acc[t] = fmaf(a.w, b.w, acc[t]);
+            }
+        }
+    }
+    if (row >= n) return;
+#pragma unroll
+    for (int t = 0; t < kGemvT; ++t)
+        if (t < nt) {
+            const float s = warp_sum(acc[t]);
+            if (lane == 0) y[(size_t) (t0 + t) * ldy + row] = s;
+        }
+}
+
 // ---------------------------------------------------------------- the router
 // A pick that never came out: every score left is NaN (the gate's input went non-finite), so nothing beat -FLT_MAX and the
 // index is still the 0x7fffffff it started as - and the next line read sc[0x7fffffff] (shared memory), then vram[0x7fffffff] /
@@ -2525,7 +2569,13 @@ void gemv_f32(const float* W, const float* x, int n, int k, int T, float* y, int
 #if defined(STRATA_METAL)
     if (T > 0 && ::strata::dsv41::metal_host::gemv_f32(W, x, n, k, T, y, ldy)) return;
 #endif
-    if (T > 0) strata_ds4_launch(gemv_f32_kernel, dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s, W, x, n, k, y, ldy);
+    if (T <= 0) return;
+    if (T == 1 || k % 4 != 0 || (std::getenv("DS4_ROUTER_ROWS") != nullptr &&
+                                 std::atoi(std::getenv("DS4_ROUTER_ROWS")) == 0))
+        strata_ds4_launch(gemv_f32_kernel, dim3(cdiv(n, kThreads / 32), T), kThreads, 0, s, W, x, n, k, y, ldy);
+    else
+        strata_ds4_launch(gemv_f32_rows_kernel, dim3(cdiv(n, kThreads / 32), cdiv(T, kGemvT)), kThreads, 0, s, W, x, n,
+                          k, T, y, ldy);
 }
 
 void route(const float* logits, const float* bias, int n, int k, int T, float route_scale, int* idx, float* w,
