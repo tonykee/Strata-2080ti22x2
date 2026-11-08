@@ -323,8 +323,14 @@ struct ArGroup {
     // member order, then reads the others' sums) - [slots][stride] sums, [2][nm][slots][kArBlocks][8] flags
     float* sums = nullptr;
     unsigned* bflags = nullptr;
+    // two members, a chunk's all-reduces (DS4_AR2 1 / 2): ar2_kernel's progress words, [nm][slots][kAr2Blocks][16]
+    // (2: FP16 on the wire)
+    unsigned* pflags = nullptr;
+    int ar2 = 0;
 };
 constexpr int kArBlocks = 64;
+constexpr int kAr2Blocks = 64;
+constexpr int kAr2Piece = 8192;   // (float4s a piece: 128 KB of F32 rows, 64 KB on an FP16 wire)
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s);
 
 #if !defined(STRATA_USE_HIP)
@@ -345,6 +351,7 @@ struct PeerAr {
     unsigned* error = nullptr;
     PeerArFailure* failure = nullptr;
     size_t stride = 0;
+    bool f16 = false;             // (DS4_PEER_AR_F16: both partials rounded to FP16 on the wire, half the bytes)
     uint64_t timeout_ticks = 0;   // globaltimer nanoseconds
 };
 bool allreduce_peer(float* x, int n, const PeerAr& a, int mi, unsigned seq, cudaStream_t s);

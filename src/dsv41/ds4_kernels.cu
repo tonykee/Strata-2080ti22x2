@@ -2042,6 +2042,52 @@ __global__ void __launch_bounds__(kThreads) ar_rs16_kernel(float* x, int n4, flo
         if (q < c0 || q >= c1) x4[q] = from_h4(ld_fresh(sum + q));
 }
 
+// two members (DS4_AR2, a chunk's all-reduces): the put and the sums pipelined.  Each block cuts its contiguous range
+// of the row in pieces of kAr2Piece float4s, puts piece k out, flags it (its progress word: seq << 12 | k + 1, after a
+// system fence) and then sums piece k - 1 - so a member's link carries its rows out while it reads the other's in,
+// where xfer_put sent the whole row out before ar_sum_kernel read any in.  The other's rows come in 16 bytes a lane
+// (ld_fresh).  The sums are ar_sum_kernel's: member 0's partial plus member 1's (__fadd_rn), bit for bit.  F16
+// (DS4_AR2=2): both partials rounded to FP16 (saturating) on the wire - this member's own too - and summed in F32 in
+// member order, so both members' copies stay the same; half the bytes.  A slot is written again two seqs on, after the
+// other member read it: its kernel for that seq ended before it put the next one, which this member's next waited for
+// (allreduce's argument).  np < 4096 (n4 < 2^31 over 64 blocks of kAr2Piece), so progress words never reach the next
+// seq
+template <bool F16>
+__global__ void __launch_bounds__(kThreads) ar2_kernel(float* x, int n4, float* rows, size_t stride, unsigned* pflags,
+                                                      int mi, int slot, int slots, unsigned seq) {
+    float4* x4 = (float4*) x;
+    const int per = (n4 + (int) gridDim.x - 1) / (int) gridDim.x;
+    const int lo = min(n4, (int) blockIdx.x * per), hi = min(n4, lo + per);
+    const int np = (hi - lo + kAr2Piece - 1) / kAr2Piece;
+    auto flag = [&](int m) { return pflags + (((size_t) m * slots + slot) * kAr2Blocks + blockIdx.x) * 16; };
+    float* mine = rows + ((size_t) mi * slots + slot) * stride;
+    const float* other = rows + ((size_t) (1 - mi) * slots + slot) * stride;
+    const unsigned base = seq << 12;
+    for (int k = 0; k <= np; ++k) {
+        if (k < np) {   // put piece k
+            const int q1 = min(hi, lo + (k + 1) * kAr2Piece);
+            for (int q = lo + k * kAr2Piece + (int) threadIdx.x; q < q1; q += blockDim.x) {
+                if (F16) ((uint2*) mine)[q] = to_h4(sat4(x4[q]));
+                else ((float4*) mine)[q] = x4[q];
+            }
+            __threadfence_system();
+            __syncthreads();
+            if (threadIdx.x == 0) *(volatile unsigned*) flag(mi) = base + (unsigned) k + 1u;
+        }
+        if (k > 0) {   // sum piece k - 1, once the other member flagged it
+            if (threadIdx.x == 0) wait_at_least(flag(1 - mi), base + (unsigned) k);
+            __syncthreads();
+            const int q1 = min(hi, lo + k * kAr2Piece);
+            for (int q = lo + (k - 1) * kAr2Piece + (int) threadIdx.x; q < q1; q += blockDim.x) {
+                const float4 a = F16 ? from_h4(to_h4(sat4(x4[q]))) : x4[q];
+                const float4 b = F16 ? from_h4(ld_fresh((const uint2*) other + q)) : ld_fresh((const float4*) other + q);
+                const float4 p = mi == 0 ? a : b, r = mi == 0 ? b : a;
+                x4[q] = make_float4(__fadd_rn(p.x, r.x), __fadd_rn(p.y, r.y), __fadd_rn(p.z, r.z), __fadd_rn(p.w, r.w));
+            }
+        }
+    }
+}
+
 // x[i] = the members' partials summed in member order (this member's from x, the others' from their host rows)
 __global__ void __launch_bounds__(kThreads) ar_sum_kernel(float* x, int n4, const float* peers, size_t stride,
                                                          const unsigned* flags, int nm, int mi, int slot, int slots,
@@ -2079,6 +2125,8 @@ __device__ __forceinline__ unsigned long long peer_wall_clock64() {
 // Two-rank peer all-reduce. Each block pushes its slice into the peer's receive slot, publishes its
 // completion flag after a system fence, then waits for the peer's block to do the same and sums the
 // peer's row beside its own.  The arithmetic is ar_sum_kernel's: member 0 + member 1, __fadd_rn.
+// F16 (DS4_PEER_AR_F16): both partials rounded to FP16 on the wire and summed in F32 - half the bytes.
+template <bool F16>
 __global__ void __launch_bounds__(kThreads) ar_peer_kernel(float* x, int n4, PeerAr a, int mi, unsigned seq) {
     __shared__ int ready;
     if (threadIdx.x == 0) ready = (*reinterpret_cast<volatile unsigned*>(a.error) & 1u) == 0;
@@ -2087,8 +2135,12 @@ __global__ void __launch_bounds__(kThreads) ar_peer_kernel(float* x, int n4, Pee
     const int slot = int(seq & 1u);
     float4* peer = reinterpret_cast<float4*>(a.peer_recv + size_t(slot) * a.stride);
     const float4* received = reinterpret_cast<const float4*>(a.recv + size_t(slot) * a.stride);
-    for (int q = blockIdx.x * blockDim.x + threadIdx.x; q < n4; q += gridDim.x * blockDim.x)
-        peer[q] = reinterpret_cast<const float4*>(x)[q];
+    uint2* peer16 = reinterpret_cast<uint2*>(a.peer_recv) + size_t(slot) * (a.stride / 2);
+    const uint2* received16 = reinterpret_cast<const uint2*>(a.recv) + size_t(slot) * (a.stride / 2);
+    for (int q = blockIdx.x * blockDim.x + threadIdx.x; q < n4; q += gridDim.x * blockDim.x) {
+        if (F16) peer16[q] = to_h4(sat4(reinterpret_cast<const float4*>(x)[q]));
+        else peer[q] = reinterpret_cast<const float4*>(x)[q];
+    }
     __threadfence_system();
     __syncthreads();
     const size_t fi = (size_t(slot) * kPeerArBlocks + blockIdx.x) * kPeerArFlagStride;
@@ -2120,8 +2172,9 @@ __global__ void __launch_bounds__(kThreads) ar_peer_kernel(float* x, int n4, Pee
     __syncthreads();
     if (!ready) return;
     for (int q = blockIdx.x * blockDim.x + threadIdx.x; q < n4; q += gridDim.x * blockDim.x) {
-        const float4 local = reinterpret_cast<const float4*>(x)[q];
-        const float4 remote = ld_fresh(received + q);
+        const float4 local = F16 ? from_h4(to_h4(sat4(reinterpret_cast<const float4*>(x)[q])))
+                                 : reinterpret_cast<const float4*>(x)[q];
+        const float4 remote = F16 ? from_h4(ld_fresh(received16 + q)) : ld_fresh(received + q);
         const float4 left = mi == 0 ? local : remote;
         const float4 right = mi == 0 ? remote : local;
         reinterpret_cast<float4*>(x)[q] = make_float4(__fadd_rn(left.x, right.x), __fadd_rn(left.y, right.y),
@@ -3173,6 +3226,15 @@ void set_flag(unsigned* flag, unsigned v, cudaStream_t s) {
 }
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s) {
     const int slot = (int) (seq % (unsigned) a.slots);
+    if (a.nm == 2 && a.ar2 > 0 && a.pflags != nullptr) {   // (DS4_AR2: the put and the sums in one pipelined launch)
+        const int n4 = n / 4;
+        const int blocks = std::max(1, std::min(kAr2Blocks, cdiv(n4, kThreads)));
+        if (a.ar2 == 2)
+            strata_ds4_launch(ar2_kernel<true>, blocks, kThreads, 0, s, x, n4, a.data, a.stride, a.pflags, mi, slot, a.slots, seq);
+        else
+            strata_ds4_launch(ar2_kernel<false>, blocks, kThreads, 0, s, x, n4, a.data, a.stride, a.pflags, mi, slot, a.slots, seq);
+        return;
+    }
     if (a.nm > 2 && a.sums != nullptr && a.bflags != nullptr) {   // (the reduce-scatter: ar_rs_kernel)
         static const bool f16 = [] {
             const char* e = std::getenv("DS4_AR_F16");
@@ -3203,13 +3265,15 @@ bool allreduce_peer(float* x, int n, const PeerAr& a, int mi, unsigned seq, cuda
         (reinterpret_cast<uintptr_t>(a.recv) & 15u) || (reinterpret_cast<uintptr_t>(a.peer_recv) & 15u) || !a.flags ||
         !a.peer_flags || !a.error || !a.timeout_ticks || a.stride < size_t(n) || a.stride % 4) return false;
     const int blocks = std::max(1, std::min(kPeerArBlocks, cdiv(n / 4, kThreads)));
-    ar_peer_kernel<<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
+    if (a.f16) ar_peer_kernel<true><<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
+    else ar_peer_kernel<false><<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
     return cudaPeekAtLastError() == cudaSuccess;
 }
 
 void peer_ar_preload() {
     cudaFuncAttributes fa{};
-    (void) cudaFuncGetAttributes(&fa, ar_peer_kernel);
+    (void) cudaFuncGetAttributes(&fa, ar_peer_kernel<false>);
+    (void) cudaFuncGetAttributes(&fa, ar_peer_kernel<true>);
     (void) cudaFuncGetAttributes(&fa, ar_sum_kernel);
     (void) cudaGetLastError();
 }

@@ -2803,9 +2803,13 @@ struct Model::Impl {
         int original_device = 0;
         cudaGetDevice(&original_device);
         for (Group& G : groups) {
-            if (G.mem.size() != 2 || G.arb.nm != 2 || chunk <= 0 || G.arb.stride == 0) continue;
+            if (G.mem.size() != 2 || G.arb.nm != 2 || chunk <= 0 || G.arb.stride == 0 || G.arb.ar2 > 0) continue;
             std::array<PeerAr, 2> a{};
             const size_t stride = G.arb.stride;
+            static const bool f16 = [] {
+                const char* e = std::getenv("DS4_PEER_AR_F16");
+                return e != nullptr && std::atoi(e) != 0;
+            }();
             auto release = [&] {
                 for (int m = 0; m < 2; ++m) {
                     cudaSetDevice(devs[(size_t) G.mem[(size_t) m]].id);
@@ -2833,6 +2837,7 @@ struct Model::Impl {
                 cudaGetLastError();
                 peer_ar_preload();
                 a[(size_t) m].stride = stride;
+                a[(size_t) m].f16 = f16;
                 a[(size_t) m].timeout_ticks = 60ull * 1000000000ull;   // globaltimer ns
                 if (cudaMalloc((void**) &a[(size_t) m].recv, 2 * stride * sizeof(float)) != cudaSuccess ||
                     cudaMalloc((void**) &a[(size_t) m].flags, 2 * kPeerArBlocks * kPeerArFlagStride * sizeof(unsigned)) != cudaSuccess ||
@@ -2954,9 +2959,9 @@ struct Model::Impl {
             }
             G.peer_arb = a;
             G.peer_arb_on = true;
-            std::fprintf(stderr, "ds4: exact peer prefill all-reduce enabled on GPU%d/GPU%d (%zu MiB/rank)\n",
+            std::fprintf(stderr, "ds4: exact peer prefill all-reduce enabled on GPU%d/GPU%d (%zu MiB/rank)%s\n",
                          devs[(size_t) G.mem[0]].id, devs[(size_t) G.mem[1]].id,
-                         (2 * stride * sizeof(float)) >> 20);
+                         (2 * stride * sizeof(float)) >> 20, f16 ? ", FP16 on the wire" : "");
         }
         cudaSetDevice(original_device);
         return true;
@@ -3622,6 +3627,10 @@ struct Model::Impl {
             for (size_t di = 0; di < devs.size(); ++di)
                 if ((sr.ckv[di] != nullptr || sr.ik[di] != nullptr) && devs[di].grp != sg) sr.readers.push_back((int) di);
         }
+        if (ar2() < 0) {
+            err = "DS4_AR2 takes 0, 1 or 2";
+            return false;
+        }
         for (Group& G : groups) {
             G.ar.nm = (int) G.mem.size();
             G.ar.slots = 4;
@@ -3647,6 +3656,10 @@ struct Model::Impl {
                 (!hmap(G.arb.sums, (size_t) G.arb.slots * G.arb.stride, err) ||
                  !hmap(G.arb.bflags, (size_t) 2 * G.arb.nm * G.arb.slots * kArBlocks * 8, err)))
                 return false;
+            if (chunk > 0 && G.arb.nm == 2 && ar2() > 0) {   // DS4_AR2: ar2_kernel's progress words (zeroed)
+                if (!hmap(G.arb.pflags, (size_t) G.arb.nm * G.arb.slots * kAr2Blocks * 16, err)) return false;
+                G.arb.ar2 = ar2();
+            }
         }
         if (g.n_mtp > 0) {
             if (!halloc(h_taps, (size_t) tap_cap * g.d_targets.size() * g.dim, err)) return false;
@@ -4580,6 +4593,19 @@ struct Model::Impl {
         }
         return true;
     }
+    // DS4_AR2=1 / 2 (0 / unset: off): a group of two's chunk all-reduces - the attention output's and the MoE's - in
+    // ar2_kernel: the put and the sums pipelined in pieces, the other member's rows read 16 bytes a lane.  1:
+    // ar_sum_kernel's sums bit for bit; 2: FP16 on the wire (both partials rounded, summed in F32 in member order).
+    // Decode's all-reduces (G.ar) never take it.  Another value: the load refuses.
+    static int ar2() {
+        static const int v = [] {
+            const char* e = std::getenv("DS4_AR2");
+            if (e == nullptr || *e == 0) return 0;
+            const int x = std::atoi(e);
+            return (x >= 0 && x <= 2 && std::strspn(e, "0123456789") == std::strlen(e)) ? x : -1;
+        }();
+        return v;
+    }
     // ---- the busy experts (run_set): an expert of many rows as FP16 GEMMs.  The tiles decode its weights again for
     // every 64 of its rows (a prompt's chunk gives a popular expert hundreds); decoded once, to the FP16 values the tiles
     // multiply (iq::f16_rows), the library's GEMM takes them at its own speed.  DS4_FAT_ROWS=N (default 0, off; N:
@@ -4601,18 +4627,22 @@ struct Model::Impl {
         if (fat_rows() <= 0 || c.fat_off) return false;
         if (c.fat_w != nullptr) return true;
         static const int R = std::getenv("DS4_FAT_PIECE") ? std::max(64, std::atoi(std::getenv("DS4_FAT_PIECE"))) : 1024;
-        if (cudaSetDevice(d.id) != cudaSuccess || cudaMalloc(&c.fat_w, (size_t) 2 * FF * D * 2) != cudaSuccess ||
+        // A member's FFN slice is not the same on every layer (the TP plan balances the blocks), and a chunk's buffers
+        // are made once: size them for the whole model's n_ff, the largest slice any member can have.  Sizing them for
+        // FF of the first busy layer overflowed fat_w / fat_gu on a later, wider slice (an illegal access).
+        const int F = std::max(FF, g.ff);
+        if (cudaSetDevice(d.id) != cudaSuccess || cudaMalloc(&c.fat_w, (size_t) 2 * F * D * 2) != cudaSuccess ||
             cudaMalloc(&c.fat_x, (size_t) R * D * 2) != cudaSuccess ||
-            cudaMalloc(&c.fat_gu, (size_t) R * 2 * FF * 4) != cudaSuccess) {
+            cudaMalloc(&c.fat_gu, (size_t) R * 2 * F * 4) != cudaSuccess) {
             cudaGetLastError();
             std::fprintf(stderr, "ds4: CUDA%d: no VRAM for the busy experts' path (%.0f MB): the tiles take them\n", d.id,
-                         ((double) 2 * FF * D * 2 + (double) R * D * 2 + (double) R * 2 * FF * 4) / 1e6);
+                         ((double) 2 * F * D * 2 + (double) R * D * 2 + (double) R * 2 * F * 4) / 1e6);
             c.fat_off = true;
             return false;
         }
         c.fat_r = R;
-        std::fprintf(stderr, "ds4: CUDA%d busy experts (%d rows or more) as FP16 GEMMs, %d rows a piece (%.0f MB)\n", d.id,
-                     fat_rows(), R, ((double) 2 * FF * D * 2 + (double) R * D * 2 + (double) R * 2 * FF * 4) / 1e6);
+        std::fprintf(stderr, "ds4: CUDA%d busy experts (%d rows or more) as FP16 GEMMs, %d rows a piece (%.0f MB, FFN up to %d)\n",
+                     d.id, fat_rows(), R, ((double) 2 * F * D * 2 + (double) R * D * 2 + (double) R * 2 * F * 4) / 1e6, F);
         return true;
 #endif
     }

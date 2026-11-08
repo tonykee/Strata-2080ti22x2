@@ -366,3 +366,22 @@ to the host transport when peer access or the setup is unavailable.
 5. **Cache substitution** — Maya's last +38%, but changes outputs; quality gate required.
 
 Raw runs are in `/tmp/strata-5137/` on the build box.
+
+## FAT fixed, Maya's AR2, and peer AR in FP16 (2026-11-09)
+
+- `fat_ready` sized `fat_w` / `fat_gu` for the first busy layer's FFN slice; the TP plan gives a
+  device different slices on different layers (1024 and 1280 of 2304 here), so a later, wider slice
+  ran past the buffers: the illegal access.  Sized for the model's `n_ff` (the widest member slice),
+  as Maya does.  `DS4_FAT_ROWS=64` then ran the 13K prompt: **686 tok/s**, against 551 with the
+  tiles (clean state, first prompt after load).  Still opt-in until its output is checked.
+- Ported Maya's `ar2_kernel` (`DS4_AR2=1` exact F32, `2` FP16 wire), opt-in.  On this host its
+  host-mapped rows and per-block progress words are slower than the peer transport:
+  `DS4_AR2=2` 424 tok/s, peer AR 551-686 tok/s in the same session.
+- `DS4_PEER_AR_F16=1`: the peer all-reduce's rows rounded to FP16 on the wire (half the bytes),
+  opt-in.  Measured 554 tok/s against 551 the same session (the earlier 686 was a quieter host);
+  inconclusive so far, so defaults are unchanged.
+- Maya v1 itself, through its tuned server and config on this host, measured **540.6 tok/s** at
+  13,165 tokens (24.35 s) and decode 31.2 tok/s (`clean-v1`); its engine log shows the experts'
+  host time (23.4 s) as the prompt's critical path.  The historical 938-1019 runs on the same pack
+  show the same 93 GB RAM copy and AR2, so the remaining difference is host state, not a missing
+  algorithm.  Strata with FAT (686) is faster than Maya's own run here.
