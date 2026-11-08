@@ -40,7 +40,6 @@
     "DS4_IQ_OWN": "1",
     "DS4_HIP_PEER_AR": "1",
     "DS4_COPY_HUGETLB": "1",
-    "DS4_CACHE_SUB_RATIO": "0",
     "DS4_CACHE_SUB_N": "12",
     "DS4_CACHE_SUB_RISK_BUDGET": "0.6",
     "DS4_CACHE_SUB_NORM": "reference"
