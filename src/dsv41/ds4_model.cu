@@ -4629,9 +4629,10 @@ struct Model::Impl {
         for (int p0 = 0; p0 < n; p0 += c.fat_r) {
             const int np = std::min(c.fat_r, n - p0);
             gg::iq::gather_f16(c.x16, D, c.row_tok + row + p0, np, D, c.fat_x, s);
-            if (cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * FF, np, D, &one, c.fat_w, CUDA_R_16F, D, c.fat_x,
+            const cublasStatus_t st = cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * FF, np, D, &one, c.fat_w, CUDA_R_16F, D, c.fat_x,
                              CUDA_R_16F, D, &zero, c.fat_gu, CUDA_R_32F, 2 * FF, CUBLAS_COMPUTE_32F,
-                             CUBLAS_GEMM_DEFAULT_TENSOR_OP) != CUBLAS_STATUS_SUCCESS) {
+                             CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+            if (st != CUBLAS_STATUS_SUCCESS) {
                 err = "the busy experts' path: cublasGemmEx (gate / up) failed";
                 return false;
             }
