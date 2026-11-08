@@ -34,5 +34,6 @@ The current safe result is **532 tok/s at 13K** after porting Maya's multi-row
 router GEMM (`gemv_f32_rows_kernel`): the FFN mHC + router + sort stage fell from
 9.5 s to 2.9 s.  The remaining profile is experts 17.2 s, sparse attention 14.3 s,
 q_b + rope 3.5 s.  `DS4_ATTN_G` is available for attention heads-per-block A/B
-(4 was slower; 0/8 is the default).  3.5K is ~374 before the router kernel and
-needs a fresh run.  FAT stays off for TP2 until the member layout is ported.
+(4 was slower; 0/8 is the default).  The fixed 2048-row slab helps 13K (~4%) but
+hurts 3.5K (266 against 374), so the server config now keeps the automatic slab.
+FAT stays off for TP2 until the member layout is ported.
