@@ -242,6 +242,32 @@ layout.  A reboot remains the only absolute reset; compaction normally recovers 
 THP allocation.  `drop_caches` is a separate, optional operation (`sync; echo 3 > /proc/sys/vm/drop_caches`)
 and mainly makes the next load colder.
 
+## `DS4_COPY_GB=32` measured
+
+`DS4_COPY_GB=32` is a static hybrid: the profile's hottest experts are copied to RAM, the rest stay
+in the model file.  It **does not disable the automatic RAM store**; without `DS4_STORE_GB=0` the
+store took another 66.8 GB and prefill fell to 85 tok/s.  The pure hybrid is:
+
+```sh
+DS4_COPY_GB=32 DS4_STORE_GB=0 DS4_COPY_HUGETLB=0 ...
+```
+
+Measured on the current host, 3.5K prompt, 128 tokens, dspark on, peer AR on, CPU lane own rows:
+
+| Config | Prefill | Decode | CPU lane |
+|---|---:|---:|---:|
+| full 90.7 GB, cache sub off | 196.3 tok/s | 38.83 tok/s | 15.18 ms/token |
+| full 90.7 GB, `DS4_CACHE_SUB_RATIO=0.1` | **197.0** | **49.23** | **9.65** |
+| 32 GB hybrid, cache sub off | 172.0 | 35.87 | 17.49 |
+| 32 GB hybrid, cache sub 0.1 | 175.7 | 34.25 | 17.31 |
+| 32 GB hybrid **without** `DS4_STORE_GB=0` | 85.4 | 36.27 | 17.14 |
+
+So 32 GB is a **memory-clean compromise**, not the fastest mode: about 8% slower decode and 12%
+lower prefill than the full copy, but no 96 GB huge-page pool and much less anonymous THP pressure.
+It still uses a 32 GB anonymous THP arena, so it is not completely free of fragmentation risk.
+With a 256 GB host, the better default remains the full copy plus a scoped 96 GB huge-page pool;
+`--mmap-experts on`/32 GB hybrid are the no-sudo fallbacks.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
