@@ -10,9 +10,14 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
   `--reserve-mib 512` it runs, but peer AR then fails to allocate and 13K prefill is
   368 tok/s against 449 without FAT; not adopted.  `DS4_FAT_ROWS` stays off.
 - Maya's `sparse_attn_v7_kernel` (Volta/Turing WMMA) needs 95,232 bytes of shared
-  memory; the RTX 2080 Ti reports 65,536 bytes (`sharedMemPerBlockOptin`).  The
-  kernel cannot be launched unchanged on this pair.
+  memory; the RTX 2080 Ti reports 65,536 bytes (`sharedMemPerBlockOptin`).  Maya's
+  `attn_v7_now()` calls `cudaFuncSetAttribute` and falls back when that fails, so
+  **Maya on this 2080 Ti pair does not use V7**; its 1,000 tok/s prefill comes from
+  the other paths (FAT_ROWS, larger attention slabs, peer AR, scalar packed
+  attention), not the V7 kernel.
 - Maya's `sparse_attn_mma_kernel` is sm_80+ (Ampere); it compiles out on sm_75.
+- Therefore the next port targets the **scalar/packed attention and FAT_ROWS**
+  paths Maya actually uses on 2080 Ti, not V7.
 
 ## Next port options
 
