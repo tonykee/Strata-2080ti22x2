@@ -30,5 +30,6 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
 3. Debug the busy-experts cublas status 13 with a minimal sm_75 GEMM test before
    enabling `DS4_FAT_ROWS`.
 
-The current safe result remains the direct-pinned prefill path:
-13K 449 tok/s, 3.5K 268-331 tok/s depending on the opt-in skip.
+The current safe result remains the direct-pinned prefill path: 13K now measures
+**472 tok/s** (variance around 449-472) and 3.5K 374 tok/s with the slab setting,
+on the same 2080 Ti pair.  FAT stays off for TP2 until the member layout is ported.
