@@ -5404,7 +5404,7 @@ struct Model::Impl {
                 std::vector<int> fat;
                 const bool ringed = c.ring != nullptr && wbase >= c.ring &&
                                     wbase < c.ring + (size_t) c.ring_n * c.ring_stride;
-                if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && D % 256 == 0 && FF % 256 == 0 &&
+                if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && l.nm == 1 && D % 256 == 0 && FF % 256 == 0 &&
                     !ringed && gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
                     gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 0)) && gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 2)) &&
                     fat_ready(d, c, D, FF)) {
