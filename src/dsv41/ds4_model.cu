@@ -4628,6 +4628,12 @@ struct Model::Impl {
         const float one = 1.0f, zero = 0.0f;
         for (int p0 = 0; p0 < n; p0 += c.fat_r) {
             const int np = std::min(c.fat_r, n - p0);
+            gg::iq::gather_f16(c.x16, D, c.row_tok + row + p0, nn, D, c.fat_x, s);
+                    const cudaError_t e = cudaStreamSynchronize(s);
+                    std::fprintf(stderr, "dbg GATHER n=%d err=%s\n", nn, cudaGetErrorString(e));
+                    if (e != cudaSuccess) break;
+                }
+            }
             gg::iq::gather_f16(c.x16, D, c.row_tok + row + p0, np, D, c.fat_x, s);
             if (cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, 2 * FF, np, D, &one, c.fat_w, CUDA_R_16F, D, c.fat_x,
                              CUDA_R_16F, D, &zero, c.fat_gu, CUDA_R_32F, 2 * FF, CUBLAS_COMPUTE_32F,
@@ -5411,7 +5417,7 @@ struct Model::Impl {
                                     wbase < c.ring + (size_t) c.ring_n * c.ring_stride;
                 // Only an own VRAM slot has the member layout f16_rows can decode; the borrowed
                 // tail slots and the streamed ring take the tiled path for now.
-                if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && wbase == l.vram_base &&
+                if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && wbase == l.vram_base && c.x16 != nullptr &&
                     D % 256 == 0 && FF % 256 == 0 && !ringed &&
                     gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
                     gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 0)) && gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 2)) &&
