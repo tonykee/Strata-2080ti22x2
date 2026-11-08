@@ -36,7 +36,9 @@ fi
 
 if [ "$HUGEGB" -gt 0 ] 2>/dev/null; then
     echo "reserving ${HUGEGB} GB of 2 MB huge pages (sudo)..."
-    if ! sudo tools/ds4_hugepages.sh "$HUGEGB"; then
+    HUGE_CMD=tools/ds4_hugepages.sh
+    [ -x /usr/local/sbin/strata-ds4-hugepages ] && HUGE_CMD=/usr/local/sbin/strata-ds4-hugepages
+    if ! sudo "$HUGE_CMD" "$HUGEGB"; then
         echo "huge-page reservation failed; fix it or rerun with DS4_HUGEPAGE_GB=0." >&2
         exit 1
     fi

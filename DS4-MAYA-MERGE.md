@@ -268,6 +268,31 @@ It still uses a 32 GB anonymous THP arena, so it is not completely free of fragm
 With a 256 GB host, the better default remains the full copy plus a scoped 96 GB huge-page pool;
 `--mmap-experts on`/32 GB hybrid are the no-sudo fallbacks.
 
+## Giving `likan` only the huge-page rights
+
+Do not put the password in a script and do not grant general sudo.  Install the two helpers as
+root-owned files and allow exactly those commands:
+
+```sh
+sudo tools/install_partial_admin.sh
+```
+
+The rule is:
+
+```sudoers
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages 96
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages-release
+```
+
+- The helpers are `root:root 0755` under `/usr/local/sbin`; `likan` cannot edit them.
+- Only "reserve 96 GB" and "release the pool" are passwordless.
+- No general `sudo`, no arbitrary `sysctl`, no shell.
+- `visudo -cf` validates the rule before it is kept.
+- `start_cpu_lane.sh` / `stop_cpu_lane.sh` prefer the installed helpers automatically.
+
+If the helpers stay in the user-writable repository, giving them NOPASSWD would be equivalent to
+granting root (the user could edit the script), so install them with this script instead.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration

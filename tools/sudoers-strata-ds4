@@ -1,0 +1,4 @@
+# Managed by Strata DS4.  Only the two root-owned huge-page helpers; no shell, no general
+# sysctl, no arbitrary command.  The start helper is fixed to 96 GB.
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages 96
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages-release

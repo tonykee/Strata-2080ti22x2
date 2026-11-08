@@ -64,7 +64,9 @@ if [ "${TOTAL:-0}" -gt 0 ] || [ "$COMPACT" = 1 ]; then
         tools/ds4_hugepages_release.sh
     else
         echo "releasing/compacting host memory (sudo)..."
-        sudo tools/ds4_hugepages_release.sh || echo "warning: huge-page release failed; run sudo tools/ds4_hugepages_release.sh" >&2
+        RELEASE=tools/ds4_hugepages_release.sh
+        [ -x /usr/local/sbin/strata-ds4-hugepages-release ] && RELEASE=/usr/local/sbin/strata-ds4-hugepages-release
+        sudo "$RELEASE" || echo "warning: huge-page release failed; run sudo $RELEASE" >&2
     fi
 else
     echo "no reserved huge-page pool; ordinary THP arena exits without sudo (set DS4_COMPACT_ON_STOP=1 to compact)."
