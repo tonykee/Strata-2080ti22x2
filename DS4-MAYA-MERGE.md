@@ -113,20 +113,21 @@ Ported Maya #821's `cache_sub::choose` / config and a CUDA route kernel. When `D
 low-score non-strongest picks by resident alternatives; the resident test is the layer's VRAM table
 (`vram_tab != 0`). Default is zero: native routing, no extra work. This is approximate and changes answers.
 
-A/B on the current degraded host, v2, TP2, CPU lane, 128 tokens, dspark on, `--mmap-experts off`:
+A/B after the host settled, v2, TP2, CPU lane, 3.5K prompt, 128 tokens, dspark on,
+`--mmap-experts off`, peer AR on:
 
-| Config | Decode | CPU lane |
-|---|---:|---:|
-| native | 18.41 tok/s | 44.07 ms/token |
-| `DS4_CACHE_SUB_RATIO=0.1` | **34.49 tok/s** | **17.56 ms/token** |
+| Config | Prefill | Decode | CPU lane |
+|---|---:|---:|---:|
+| cache sub off (default) | 196.3 tok/s | 38.83 tok/s | 15.18 ms/token |
+| `DS4_CACHE_SUB_RATIO=0.1` | **197.0 tok/s** | **49.23 tok/s** | **9.65 ms/token** |
 
-Prefill was unchanged (39.9 vs 40.2 tok/s in that state). The generated 128-token sequence happened to
-be the same on this repetitive prompt, but that is not a quality proof: other prompts and the 30-task
+That is +26.8% decode at the same state; prefill is unchanged. The generated 128-token sequence happened
+to be the same on this repetitive prompt, but that is not a quality proof: other prompts and the 30-task
 quality set still need to be run before any adoption. Keep it opt-in; not the default.
 
-Note: the host is still in a degraded state after repeated 90 GB CPU-lane copies (CPU lane 44-96 ms/token
-against 21 ms in the earlier clean-state 31.38 tok/s run). A host reboot is needed before the final
-numbers are quoted.
+For reference, the same branch before peer AR/cache sub measured 31.38 tok/s decode / 185.8 prefill.
+The earlier 18-34 tok/s cache-sub A/B was taken while `kcompactd` was still cleaning up after repeated
+90 GB CPU-lane copies (CPU lane 44-96 ms/token); do not use those numbers.
 
 ## Launcher
 
