@@ -1,0 +1,21 @@
+[Unit]
+Description=Strata DeepSeek-V4.1-Flash 2x2080Ti server (scoped huge-page pool)
+After=network.target
+
+[Service]
+Type=simple
+User=likan
+Group=likan
+WorkingDirectory=/home/likan/strata-latest
+Environment=DS4_COPY_HUGETLB=1
+# Reserve once for this service lifetime; ExecStartPre/StopPost run as root (+), the engine as User.
+ExecStartPre=+/home/likan/strata-latest/tools/ds4_hugepages.sh 96
+ExecStart=/home/likan/strata-latest/start_ds4_v2_2080ti.sh --serve
+ExecStopPost=+/home/likan/strata-latest/tools/ds4_hugepages_release.sh
+TimeoutStartSec=0
+TimeoutStopSec=120
+Restart=no
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

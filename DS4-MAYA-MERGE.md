@@ -156,6 +156,41 @@ exit.  If the pool cannot be reserved, the alternatives are `--mmap-experts on` 
 copy; reads in place), a smaller `DS4_COPY_GB` hybrid, or keeping one server process alive.  The
 huge-page path is the one that keeps the measured CPU-lane speed across reloads.
 
+## Scoped huge-page pool: clean on exit, no assumption about the next run
+
+A process exit only returns `MAP_HUGETLB` pages to the kernel's huge-page pool; it does not return
+the pool to ordinary memory (`HugePages_Total` stays).  That is why a persistent `vm.nr_hugepages`
+reservation can look like it survived the engine.  The pool is not model data, but a later Qwen load
+sees less ordinary RAM.
+
+To make the pool process-scoped, use the service unit in `tools/strata-ds4-2080ti.service`:
+
+```sh
+sudo cp tools/strata-ds4-2080ti.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now strata-ds4-2080ti
+```
+
+- `ExecStartPre` (root) reserves 96 GB.
+- `ExecStart` runs the engine as the `likan` user.
+- `ExecStopPost` (root) runs `tools/ds4_hugepages_release.sh`: `vm.nr_hugepages=0`, then
+  `/proc/sys/vm/compact_memory`.
+
+So `systemctl stop strata-ds4-2080ti` returns the pool to ordinary memory and compacts, regardless
+of whether DS4, Qwen, or something else starts next.  The same is available manually:
+
+```sh
+sudo tools/ds4_hugepages_release.sh
+```
+
+Caveat: release+compact is not identical to a reboot for every kernel cache/allocator detail; a
+reboot is still the only absolute reset.  It does remove the huge-page pool deterministically.  For
+a wrapper instead of systemd, run the engine as a child and call the release script from `trap EXIT`;
+`SIGKILL` of the wrapper bypasses traps, while systemd's `ExecStopPost` handles service stops.
+
+If the pool is not wanted at all, `--mmap-experts on` (or a small `DS4_COPY_GB`) avoids the 90 GB
+anonymous copy and has no global pool to clean; process exit then returns its memory normally.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
