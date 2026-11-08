@@ -191,6 +191,26 @@ a wrapper instead of systemd, run the engine as a child and call the release scr
 If the pool is not wanted at all, `--mmap-experts on` (or a small `DS4_COPY_GB`) avoids the 90 GB
 anonymous copy and has no global pool to clean; process exit then returns its memory normally.
 
+## CPU-lane start/stop
+
+`start_cpu_lane.sh` and `stop_cpu_lane.sh` are the process-scoped pair:
+
+```sh
+./start_cpu_lane.sh                 # reserves 96 GB huge pages (sudo), starts the server as you
+./stop_cpu_lane.sh                  # stops server/engine, then releases the pool (sudo)
+DS4_HUGEPAGE_GB=0 ./start_cpu_lane.sh   # no sudo at all; ordinary THP arena
+```
+
+The Python server and `strata-dsv41` engine run as the invoking user.  Only
+`vm.nr_hugepages` (reserve/release) and `compact_memory` need root; the scripts use `sudo` for
+exactly those steps.  `DS4_HUGEPAGE_GB=0` skips both, so start/stop need no admin at all; the
+engine then uses its ordinary THP arena.
+
+The server is the normal `serve/server.py`; its config is `tools/strata-ds4-v2-2080ti.json` (arch
+`deepseek41`, port 8000, TP2, `--mmap-experts off`, 4 experts, dspark on, peer AR on, cache
+substitution off).  The start script writes `.strata-ds4-v2.pid`; the stop script only matches this
+tree's server and engine paths, not production `/home/likan/strata`.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
