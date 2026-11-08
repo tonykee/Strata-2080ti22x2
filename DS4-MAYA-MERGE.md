@@ -385,3 +385,36 @@ Raw runs are in `/tmp/strata-5137/` on the build box.
   host time (23.4 s) as the prompt's critical path.  The historical 938-1019 runs on the same pack
   show the same 93 GB RAM copy and AR2, so the remaining difference is host state, not a missing
   algorithm.  Strata with FAT (686) is faster than Maya's own run here.
+
+## Current-host A/B (2026-11-09, after many load/free cycles)
+
+The same machine, one engine at a time, the same 13K prompt IDs for Strata and Maya's `clean-v1` text
+prompts for Maya:
+
+| | prefill at ~13K | decode |
+|---|---|---|
+| Maya v1 (tuned server, its own config) | 540.6 tok/s (24.35 s, 13,165 tok) | 31.2 tok/s (256 tok); 25.8 after an 8K warmup |
+| Strata, FAT 64 + peer AR, same host state | 551 tok/s | 16.9 after the same 8K warmup |
+| Strata, first run after a clean reboot | **686 tok/s** (19.07 s) | 23.7 (13K prompt) |
+
+Maya's own engine log puts its prompt's critical path in the experts' host time (23.4 s): the same
+93 GB RAM copy, the same ring, AR2 on both.  The 938-1019 runs in its log are the same algorithm and
+pack on a quieter host, not a different path.  The huge-page script documents the state: repeated
+load/free cycles fragment the host until a reboot; GPU clocks are 1.5-1.9 GHz at 55-67 C, so this is
+not GPU throttling.
+
+The objective's 1000 / 40+ therefore needs a **clean reboot** (and possibly the 250 W power limit)
+before the next measurement.  Only `strata-ds4-hugepages` and its release script are NOPASSWD here;
+`reboot` and `nvidia-smi -pl` need a password.  After the reboot:
+
+```sh
+cd /home/likan/strata-latest
+sudo -n /usr/local/sbin/strata-ds4-hugepages 96
+IDS=$(cat bench/ds4-baseline/prompt-13k.txt)
+DS4_HIP_PEER_AR=1 DS4_ENGRAM_CACHE_MB=2048 DS4_SETTLE_MS=2000 DS4_IQ1S_ROWS=1 DS4_IQ_OWN=1 \
+DS4_STORE_GB=0 DS4_COPY_HUGETLB=1 DS4_COPY_PIN=1 DS4_ATTN_V7=1 \
+./build-dsv41/strata-dsv41 --pack /mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS-v2/maya-ds4-v2 \
+  --gpus 0,1 --tp 2 --max-context 32768 --reserve-mib 768 --cpu-threads 20 --mmap-experts off \
+  --experts 4 --prefill-chunk 8192 --dspark on --ids "$IDS" --n 1
+sudo -n /usr/local/sbin/strata-ds4-hugepages-release
+```
