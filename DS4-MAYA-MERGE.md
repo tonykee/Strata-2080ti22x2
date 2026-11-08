@@ -331,11 +331,11 @@ After a clean reboot Maya v1 reproduces the historical figure: 13K prefill **101
 6.6K **835**, decode **46.6**.  Strata on the same prompt: **551 tok/s**.  The gap is code,
 not host state.
 
-FAT_ROWS now reaches the FP16 GEMM path for TP2's own VRAM slots (`wbase == vram_base`,
-member layout); the earlier `f16_rows` illegal access is gone.  The next failure is
-`gather_f16` on the prompt's `row_tok` indices (illegal access) before cuBLAS, so FAT
-remains off by default.  The remaining path to Maya's 1019 is FAT + TP_SHARES/recent
-slots, not more attention.
+FAT_ROWS now reaches the FP16 decode of TP2's own VRAM slots (`wbase == vram_base`,
+member layout), but `f16_rows` still reports an illegal access there; the prompt's
+`row_tok` indices themselves are in range (verified: T 6529, row_tok 0..6528).  FAT is
+kept off by default.  The remaining path to Maya's 1019 is FAT + TP_SHARES/recent slots,
+not more attention.
 
 ## Launcher
 
