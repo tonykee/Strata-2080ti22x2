@@ -314,7 +314,7 @@ Measured on the 13K prompt, v2, TP2, full copy, 96 GB huge pages, `DS4_COPY_PIN=
 | before both fixes | 102 tok/s |
 | direct pinned copies | 433 tok/s |
 | + `DS4_ATTN_SLAB=2048` | 449 tok/s |
-| + `DS4_SKIP_UNPICKED=1` | **451 tok/s** |
+| + `DS4_SKIP_UNPICKED=1` | **451 tok/s** (3.5K: 331) |
 
 That is a **4.4x** improvement, and the 3.5K prompt is no longer using the staging path
 either.  Remaining gap to Maya's ~1000 tok/s is in the newer CUDA prefill kernels (attention

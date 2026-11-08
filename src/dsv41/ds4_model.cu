@@ -4883,7 +4883,7 @@ struct Model::Impl {
             const Layer& l0 = L[(size_t) bt.il];
             const auto picked = [&](int i) {
                 if (!skip_unpicked) return true;
-                const size_t v = (size_t) l0.n_slots + (size_t) bt.j0 + (size_t) i;   // (the streamed ones' virtual slots)
+                const size_t v = (size_t) l0.pv_n + (size_t) bt.j0 + (size_t) i;   // (the streamed ones' virtual slots; plan_streams uses pv_n)
                 return S.routed_bounds[v + 1] > S.routed_bounds[v];
             };
             int mi = 0;
