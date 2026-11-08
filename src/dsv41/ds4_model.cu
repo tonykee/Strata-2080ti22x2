@@ -3150,9 +3150,9 @@ struct Model::Impl {
         else if (chunk > 0 && o.prefill_chunk < 0) chunk = chunk_default(chunk);
         if (const char* v = std::getenv("DS4_CHUNK_MIN")) chunk_min = std::max(1, std::atoi(v));
         one_gpu_path();   // (the devices, their groups and the helper GPU known: before the recent slots' count)
-        // (Strata: a GGUF's 32 while the lane is on, DS4_STREAM=1, and streamed experts land in them, DS4_LAND - the
-        // link's bytes stay in VRAM; otherwise opt-in with DS4_RECENT=<n>)
-        recent_n = std::max(0, (int) env_f("DS4_RECENT", chunk > 0 && pk.gguf && ln_land && !lane_env_off() ? 32.0f : 0.0f));
+        // (a GGUF: 32 too while streamed experts land in them, DS4_LAND - the link's bytes stay in VRAM and the
+        // decode reads those experts from VRAM; otherwise opt-in with DS4_RECENT=<n>)
+        recent_n = std::max(0, (int) env_f("DS4_RECENT", chunk > 0 && (!file_experts || (pk.gguf && ln_land)) ? 32.0f : 0.0f));
         if (chunk > 0) {
             chunk = std::min(kMaxChunk, std::max(dc != nullptr ? 16 : 256, chunk / 16 * 16));
             eg_cap = (size_t) chunk;
@@ -4614,8 +4614,10 @@ struct Model::Impl {
     //  RTX 5090, ISTA-DAS 2.25 bpw: a 13K-token prompt 1,400 -> 1,625 tok/s at 64 rows, decode unchanged)
     static int fat_rows() {
         static const int n = [] {
-            const int v = std::getenv("DS4_FAT_ROWS") ? std::max(0, std::atoi(std::getenv("DS4_FAT_ROWS"))) : 0;
-            return v > 0 ? std::max(v, 17) : 0;   // (the light kernels take the experts of 16 rows or fewer)
+            // Maya's default (64): the experts the tiles would decode again for every 64 of their rows, decoded once
+            // and multiplied by the library's GEMM.  DS4_FAT_ROWS=0 turns it off; the light kernels take 16 or fewer.
+            const int v = std::getenv("DS4_FAT_ROWS") ? std::max(0, std::atoi(std::getenv("DS4_FAT_ROWS"))) : 64;
+            return v > 0 ? std::max(v, 17) : 0;
         }();
         return n;
     }
