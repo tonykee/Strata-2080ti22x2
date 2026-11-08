@@ -4,10 +4,11 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
 
 ## Findings
 
-- The busy-experts FP16 GEMM path is already ported (`DS4_FAT_ROWS`), but on this
-  sm_75 pair `cublasGemmEx` returns status 13 (execution failed) when enabled.
-  `CUBLAS_GEMM_DEFAULT` and `CUBLAS_GEMM_DEFAULT_TENSOR_OP` both fail; the path is
-  disabled by default, so it does not affect the stock build.
+- The busy-experts FP16 GEMM path is already ported (`DS4_FAT_ROWS`).  With a full
+  90.4 GB copy and `--reserve-mib 768` it returned cublas status 13 (execution failed;
+  the cublas workspace no longer fit in CUDA0's 206 MiB free).  With
+  `--reserve-mib 512` it runs, but peer AR then fails to allocate and 13K prefill is
+  368 tok/s against 449 without FAT; not adopted.  `DS4_FAT_ROWS` stays off.
 - Maya's `sparse_attn_v7_kernel` (Volta/Turing WMMA) needs 95,232 bytes of shared
   memory; the RTX 2080 Ti reports 65,536 bytes (`sharedMemPerBlockOptin`).  The
   kernel cannot be launched unchanged on this pair.
