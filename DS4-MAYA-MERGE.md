@@ -280,12 +280,14 @@ sudo tools/install_partial_admin.sh
 The rule is:
 
 ```sudoers
-likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages 96
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages *
 likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages-release
 ```
 
 - The helpers are `root:root 0755` under `/usr/local/sbin`; `likan` cannot edit them.
-- Only "reserve 96 GB" and "release the pool" are passwordless.
+- The reservation helper accepts its GB argument (1-192), so changing
+  `DS4_HUGEPAGE_GB` does not require a sudoers edit; the helper itself rejects out-of-range values.
+- Only "reserve N GB" (1-192) and "release the pool" are passwordless.
 - No general `sudo`, no arbitrary `sysctl`, no shell.
 - `visudo -cf` validates the rule before it is kept.
 - `start_cpu_lane.sh` / `stop_cpu_lane.sh` prefer the installed helpers automatically.

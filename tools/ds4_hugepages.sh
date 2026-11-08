@@ -29,8 +29,8 @@ for arg in "$@"; do
     esac
 done
 
-if [ "$GB" -le 0 ]; then
-    echo "GB must be positive" >&2
+if [ "$GB" -le 0 ] || [ "$GB" -gt 192 ]; then
+    echo "GB must be between 1 and 192" >&2
     exit 2
 fi
 if [ "$(id -u)" -ne 0 ]; then
