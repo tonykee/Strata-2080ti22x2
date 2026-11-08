@@ -129,6 +129,33 @@ For reference, the same branch before peer AR/cache sub measured 31.38 tok/s dec
 The earlier 18-34 tok/s cache-sub A/B was taken while `kcompactd` was still cleaning up after repeated
 90 GB CPU-lane copies (CPU lane 44-96 ms/token); do not use those numbers.
 
+## Memory state: why a reboot was needed, and the fix
+
+The 90.7 GB `--mmap-experts off` copy is anonymous `MADV_HUGEPAGE` memory.  Repeated load/free
+cycles can leave the host fragmented; the next copy falls back to 4 KB pages and the CPU lane goes
+from about **10-15 ms/token** to **40-96 ms/token**.  That is a host-memory problem, not a model
+reload requirement, and a reboot is not the right fix.
+
+The engine already has an explicit `MAP_HUGETLB` arena (`DS4_COPY_HUGETLB`).  Reserve the 2 MB pool
+once, and every process reload reuses the same pages; no compaction or reboot between loads:
+
+```sh
+sudo tools/ds4_hugepages.sh 96 --persist
+DS4_COPY_HUGETLB=1 ./start_ds4_v2_2080ti.sh --serve
+```
+
+The default 96 GB leaves about 28 GB for the OS and page cache on this 127 GB host; the v2 CPU-lane
+copy is about 90.7 GB.  Verify before launch:
+
+```sh
+grep -E 'HugePages_(Total|Free)|Hugepagesize' /proc/meminfo
+```
+
+`HugePages_Free` must cover the copy; during a load it drops by the copied bytes and returns after
+exit.  If the pool cannot be reserved, the alternatives are `--mmap-experts on` (no 90 GB anonymous
+copy; reads in place), a smaller `DS4_COPY_GB` hybrid, or keeping one server process alive.  The
+huge-page path is the one that keeps the measured CPU-lane speed across reloads.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration

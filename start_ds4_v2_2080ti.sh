@@ -10,6 +10,9 @@
 #   DS4_CACHE_SUB_RATIO=F   approximate cache substitution (default 0; 0.1 changes answers, opt-in)
 #   DS4_IQ_OWN=0|1          force native / own IQ1_S rows (default 1, the checked-own form)
 #   DS4_MMAP_EXPERTS=on|off (default off: 90 GB CPU-lane copy into RAM; on reads experts in place)
+#   Before repeated reloads, reserve the huge-page pool once:
+#     sudo tools/ds4_hugepages.sh 96 --persist
+#   This keeps the CPU-lane arena on 2 MB pages and avoids the fragmentation/reboot cycle.
 #   DS4_EXPERTS=N           experts per token (4 measured; 6 full quality, slower)
 #   DS4_TP/N, DS4_GPUS, DS4_MAX_CONTEXT, DS4_RESERVE_MIB, DS4_PREFILL_CHUNK
 cd /home/likan/strata-latest || exit 1
