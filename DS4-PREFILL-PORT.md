@@ -5,10 +5,12 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
 ## Findings
 
 - The busy-experts FP16 GEMM path is already ported (`DS4_FAT_ROWS`).  With a full
-  90.4 GB copy and `--reserve-mib 768` it returned cublas status 13 (execution failed;
-  the cublas workspace no longer fit in CUDA0's 206 MiB free).  With
-  `--reserve-mib 512` it runs, but peer AR then fails to allocate and 13K prefill is
-  368 tok/s against 449 without FAT; not adopted.  `DS4_FAT_ROWS` stays off.
+  90.4 GB copy it now reaches `f16_rows` but that kernel hits an illegal memory access
+  on the TP2 members: `run_set` passes the full FFN width while the source blob is a
+  member's slice.  A `ringed` guard was added (Maya only runs FAT on VRAM experts),
+  but the member width/offset still needs a per-member FAT port.  `DS4_FAT_ROWS`
+  stays off; with `--reserve-mib 512` the old path ran but peer AR lost its 320 MiB
+  and 13K prefill fell to 368 against 449 without FAT.
 - Maya's `sparse_attn_v7_kernel` (Volta/Turing WMMA) needs 95,232 bytes of shared
   memory; the RTX 2080 Ti reports 65,536 bytes (`sharedMemPerBlockOptin`).  Maya's
   `attn_v7_now()` calls `cudaFuncSetAttribute` and falls back when that fails, so

@@ -5402,8 +5402,10 @@ struct Model::Impl {
                 // the busy experts (DS4_FAT_ROWS=N: those of N rows or more): their weights decoded to FP16 once and
                 // multiplied by the library's GEMM - the tiles decode an expert's weights again for every 64 of its rows
                 std::vector<int> fat;
+                const bool ringed = c.ring != nullptr && wbase >= c.ring &&
+                                    wbase < c.ring + (size_t) c.ring_n * c.ring_stride;
                 if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && D % 256 == 0 && FF % 256 == 0 &&
-                    gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
+                    !ringed && gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
                     gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 0)) && gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 2)) &&
                     fat_ready(d, c, D, FF)) {
                     int rest = 0;
@@ -5434,13 +5436,17 @@ struct Model::Impl {
                     cudaEventRecord(ek.e0, d.st);
                 }
                 if (sa.lay.fmt == gg::kFmtMXFP4) {
-                    gg::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
+                    if (sa.max_rows > 0) {
+                        gg::set_gate_up(sa, c.x, D, c.row_tok + a, c.h16, FF, d.st);
+                    }
                     for (const int i : fat)
                         if (!fat_gate_up(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i], b[i + 1] - b[i], a, D, FF,
                                          d.st, err))
                             return false;
                     if (ekp) cudaEventRecord(ek.e1, d.st);
-                    gg::set_down(sa, c.h16, FF, c.y, D, d.st);
+                    if (sa.max_rows > 0) {
+                        gg::set_down(sa, c.h16, FF, c.y, D, d.st);
+                    }
                     for (const int i : fat)
                         if (!fat_down(c, sa, sa.wbase + (size_t) (i - i0) * stride, b[i] - a, b[i + 1] - b[i], D, FF,
                                       d.st, err))
