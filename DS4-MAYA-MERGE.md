@@ -320,7 +320,10 @@ That is a **4.4x** improvement, and the 3.5K prompt is no longer using the stagi
 either.  Remaining gap to Maya's ~1000 tok/s is in the newer CUDA prefill kernels (attention
 MMA/MMQ paths in Maya v1.1.5x) rather than in the CPU-lane copy; those are a separate port.
 `DS4_ATTN_SLAB=2048` is now in the server config; `DS4_SKIP_UNPICKED=1` stays opt-in (its
-layer-routing wait helps only when a chunk picks few experts).
+layer-routing wait helps only when a chunk picks few experts; the virtual-slot base was also
+wrong -- `n_slots` instead of `pv_n` -- and is fixed, but output parity is still unverified).
+The safe (`DS4_ATTN_SLAB=2048`, no skip) path measured 449 tok/s at 13K; at 3.5K it measured
+268 tok/s (the skip run 331, quality pending), so the short-prompt slab needs its own A/B.
 
 ## Launcher
 
