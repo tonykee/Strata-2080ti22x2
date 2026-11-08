@@ -4400,6 +4400,11 @@ struct Model::Impl {
     }
     // A group's chunk scratch fits the widest actual FFN member over all its layers, including
     // GGUF quantization-block shares and EXL3's rotated shares. Attention/indexer slabs stay unchanged.
+    static size_t w16_elems_env() {
+        const char* v = std::getenv("DS4_W16_MB");
+        if (v != nullptr) return (size_t) std::max(1, std::atoi(v)) << 19;   // MB -> uint16 elements
+        return (size_t) 8 << 20;                                          // 16 MB, the previous default
+    }
     void chunk_dims(Chunk& c, int nm) const {
         const int NHL = g.heads / head_members(nm), HQ = NHL * g.hd, OG = g.o_groups / head_members(nm);
         int FF = nm == 1 ? g.ff : 0;
@@ -4410,7 +4415,7 @@ struct Model::Impl {
         c.HQ = HQ, c.OG = OG, c.FF = FF;
         c.A = std::max(64, (int) (((size_t) 8 << 20) / (size_t) HQ) / 64 * 64);
         c.AI = std::max(32, std::min(128, (int) (((size_t) 64 << 20) / (((size_t) o.max_context + 64) * 4)) / 32 * 32));
-        c.w16_elems = (size_t) 8 << 20;
+        c.w16_elems = w16_elems_env();
     }
     bool alloc_chunks(std::string& err) {
         slab_auto_grew_ = false;
@@ -4482,7 +4487,7 @@ struct Model::Impl {
             }
             // (the indexer's slab: its scores rows are the context wide - about 64 MB of them)
             c.AI = std::max(32, std::min(128, (int) (((size_t) 64 << 20) / (((size_t) o.max_context + 64) * 4)) / 32 * 32));
-            c.w16_elems = (size_t) 8 << 20;
+            c.w16_elems = w16_elems_env();
             bool has_eg = false, has_first = false, lend = borrow_on;
             size_t stride = 0;
             for (const Layer& l : L)
@@ -5405,7 +5410,7 @@ struct Model::Impl {
                 const bool ringed = c.ring != nullptr && wbase >= c.ring &&
                                     wbase < c.ring + (size_t) c.ring_n * c.ring_stride;
                 if (sa.lay.fmt == gg::kFmtMXFP4 && !gg::mx_experts(sa.lay) && l.nm == 1 && D % 256 == 0 && FF % 256 == 0 &&
-                    !ringed && gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
+                    l.nm == 1 && !ringed && gg::expert_type(sa.lay, 1) == gg::expert_type(sa.lay, 0) &&
                     gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 0)) && gg::iq::f16_rows_ok(gg::expert_type(sa.lay, 2)) &&
                     fat_ready(d, c, D, FF)) {
                     int rest = 0;
