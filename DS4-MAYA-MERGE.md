@@ -325,6 +325,18 @@ wrong -- `n_slots` instead of `pv_n` -- and is fixed, but output parity is still
 The safe (`DS4_ATTN_SLAB=2048`, no skip) path measured 449 tok/s at 13K; at 3.5K it measured
 268 tok/s (the skip run 331, quality pending), so the short-prompt slab needs its own A/B.
 
+## 2026-11-08: post-reboot baseline and FAT TP2 progress
+
+After a clean reboot Maya v1 reproduces the historical figure: 13K prefill **1019 tok/s**,
+6.6K **835**, decode **46.6**.  Strata on the same prompt: **551 tok/s**.  The gap is code,
+not host state.
+
+FAT_ROWS now reaches the FP16 GEMM path for TP2's own VRAM slots (`wbase == vram_base`,
+member layout); the earlier `f16_rows` illegal access is gone.  The next failure is
+`gather_f16` on the prompt's `row_tok` indices (illegal access) before cuBLAS, so FAT
+remains off by default.  The remaining path to Maya's 1019 is FAT + TP_SHARES/recent
+slots, not more attention.
+
 ## Launcher
 
 `start_ds4_v2_2080ti.sh` is the 2x2080Ti launcher. It defaults to the measured configuration
