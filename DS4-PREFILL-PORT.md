@@ -32,8 +32,10 @@ Started from `ds4-cache-sub` (prefill direct-pinned DMA, 13K 449 tok/s).
 
 The current safe result is **532 tok/s at 13K** after porting Maya's multi-row
 router GEMM (`gemv_f32_rows_kernel`): the FFN mHC + router + sort stage fell from
-9.5 s to 2.9 s.  The remaining profile is experts 17.2 s, sparse attention 14.3 s,
-q_b + rope 3.5 s.  `DS4_ATTN_G` is available for attention heads-per-block A/B
-(4 was slower; 0/8 is the default).  The fixed 2048-row slab helps 13K (~4%) but
-hurts 3.5K (266 against 374), so the server config now keeps the automatic slab.
-FAT stays off for TP2 until the member layout is ported.
+9.5 s to 2.9 s.  A 64 KiB sm_75 V7 attention variant (`DS4_ATTN_V7=1`) now runs:
+85.8 s sparse attention -> 8.6 s, best measured 13K **584.7 tok/s**; high-only Q is
+approximate (quality still to verify).  With `DS4_SKIP_UNPICKED=1` it measured 562.9
+(11,840 copied / 38,880 left out).  `DS4_ATTN_V7` stays opt-in.  `DS4_ATTN_G` is
+available for heads-per-block A/B (4 slower; 0/8 default).  The fixed 2048-row slab
+helps 13K but hurts 3.5K, so the server config keeps the automatic slab.  FAT stays
+off for TP2 until the member layout is ported.

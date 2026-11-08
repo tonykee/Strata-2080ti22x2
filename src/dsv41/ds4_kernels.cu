@@ -15,6 +15,9 @@
 #include "ds4_experts_rule.hpp"
 
 #include <cuda_fp16.h>
+#if !defined(STRATA_USE_HIP)
+#include <mma.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -2676,6 +2679,257 @@ static int sm_count() {
     return v;
 }
 
+#if !defined(STRATA_USE_HIP)
+constexpr int kV7Threads = 512;   // 16 warps; sm_75: high-only Q and a 64-row key tile fit 64 KiB
+constexpr int kV7Max = 640, kV7LdQ = 520, kV7LdK = 40, kV7LdS = kV7Max + 8, kV7Rows1 = 64, kV7RowsV = 16;
+constexpr float kV7RowScale = 0.0625f, kV7PScale = 16384.0f;
+constexpr size_t kV7RegA = (size_t) 16 * kV7LdQ * 2;               // Q high; later the 16 V rows
+constexpr size_t kV7RegB = (size_t) kV7Rows1 * kV7LdK * 2;         // phase 1's key rows
+constexpr size_t kV7RegC = (size_t) 16 * kV7LdS * 4;               // S/P high+low, then O
+constexpr size_t kV7Smem = kV7RegA + kV7RegB + kV7RegC;
+static_assert(kV7RegA >= (size_t) kV7RowsV * kV7LdQ * 2, "region A");
+static_assert(kV7RegC >= (size_t) 2 * 16 * kV7LdS * 2 && kV7RegC >= (size_t) 16 * 512 * 4, "region C");
+static_assert(kV7Smem <= 64 * 1024, "the 2080 Ti's shared memory");
+__global__ void __launch_bounds__(kV7Threads, 1) sparse_attn_v7_kernel(const float* __restrict__ q,
+                                                                       const uint16_t* __restrict__ win,
+                                                                       const uint8_t* __restrict__ ckv,
+                                                                       const int* __restrict__ sel, int sel_stride,
+                                                                       AttnRows ar, const float* __restrict__ sink,
+                                                                       int heads, float scale, float* __restrict__ out) {
+#if !defined(STRATA_USE_HIP) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+    namespace wm = nvcuda::wmma;
+    constexpr int d = 512, NW = kV7Threads / 32;
+    extern __shared__ __align__(32) unsigned char v7_smem[];
+    __half* Qh = (__half*) v7_smem;
+    __half* Vs = (__half*) v7_smem;                        // (phase 3: region A)
+    float* Os = (float*) (v7_smem + kV7RegA + kV7RegB);    // (the end: region C, after P)
+    __half* Ks = (__half*) (v7_smem + kV7RegA);
+    float* S = (float*) (v7_smem + kV7RegA + kV7RegB);
+    __half* Ph = (__half*) (v7_smem + kV7RegA + kV7RegB);   // (after the softmax: region C)
+    __half* Pl = Ph + 16 * kV7LdS;
+    __shared__ float qf[16], den_s[16];
+    const int hb = blockIdx.x * 16, t = blockIdx.y;
+    const int tid = (int) threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    int n_win, n_sel, w0;
+    if (ar.gen) {
+        const long long ta = ar.t0 + t, pa = ar.p0 + ta;
+        const long long first = max((long long) ar.win - ar.p0, ta + 1);
+        w0 = (int) first;
+        n_win = (int) (ar.win + ta - first + 1);
+        n_sel = ar.R > 0 ? (int) min((long long) ar.kcap, (pa + 1) / ar.R) : 0;
+    } else {
+        n_win = ar.nwin[t], n_sel = ar.nsel[t], w0 = ar.win0[t];
+    }
+    const int total = n_win + n_sel;   // (<= kV7Max: the caller's check)
+    const uint16_t* wbase = win + (size_t) w0 * d;
+    const int* sl = sel + (size_t) t * sel_stride;
+    const size_t crow = kv_row_bytes(kKvFp4, d);
+    {   // head `warp`'s query: to a largest value of ~2^12, as FP16 high + low
+        const float* qr = q + ((size_t) t * heads + hb + warp) * d;
+        float a = 0.0f;
+        for (int c = lane; c < d; c += 32) a = fmaxf(a, fabsf(qr[c]));
+        for (int o = 16; o > 0; o >>= 1) a = fmaxf(a, __shfl_xor_sync(0xffffffffu, a, o));
+        const int e = a > 0.0f ? (int) ((__float_as_uint(a) >> 23) & 0xffu) - 127 : 0;
+        const float up = ldexpf(1.0f, 12 - e);
+        for (int c = lane; c < d; c += 32) {
+            const float v = qr[c] * up;
+            const __half hi = __float2half_rn(v);
+            Qh[warp * kV7LdQ + c] = hi;
+        }
+        if (lane == 0) qf[warp] = scale / (up * kV7RowScale);   // (S as computed -> the scaled score)
+    }
+    // row j's values [v0, v0 + N): fetched into registers (in flight while the tensor cores work), then as FP16 times
+    // 2^-4 into shared memory; zeros past the rows.  N 16 (phase 1) or 32 (phase 3)
+    struct Raw {
+        uint4 a[4];
+        uint32_t sc;
+        int kind;   // 0 none, 1 a window row (BF16), 2 a compressed row (FP4 codes, E4M3 scales a 16 values)
+    };
+    auto fetch = [&](int j, int v0, int N, Raw& r) {
+        if (j >= total) {
+            r.kind = 0;
+        } else if (j < n_win) {
+            const uint4* src = (const uint4*) (wbase + (size_t) j * d + v0);
+            r.kind = 1;
+            for (int i = 0; i < N / 8; ++i) r.a[i] = src[i];
+        } else {
+            const uint8_t* rr = ckv + (size_t) sl[j - n_win] * crow;
+            r.kind = 2;
+            if (N == 32) {
+                r.a[0] = *(const uint4*) (rr + v0 / 2);
+                r.sc = (uint32_t) rr[256 + v0 / 16] | ((uint32_t) rr[256 + v0 / 16 + 1] << 8);
+            } else {
+                const uint2 c = *(const uint2*) (rr + v0 / 2);
+                r.a[0] = make_uint4(c.x, c.y, 0u, 0u);
+                r.sc = rr[256 + v0 / 16];
+            }
+        }
+    };
+    auto put = [&](const Raw& r, int N, __half* dst) {   // (8 values a 16-byte store: fewer and wider stores)
+        union H8 {
+            uint4 v;
+            __half2 h[4];
+        };
+        if (r.kind == 1) {
+            const uint16_t* bv = (const uint16_t*) r.a;
+            for (int g = 0; g < N; g += 8) {
+                H8 u;
+#pragma unroll
+                for (int i = 0; i < 4; ++i)
+                    u.h[i] = __floats2half2_rn(bf16f(bv[g + 2 * i]) * kV7RowScale, bf16f(bv[g + 2 * i + 1]) * kV7RowScale);
+                *(uint4*) (dst + g) = u.v;
+            }
+        } else if (r.kind == 2) {   // (unpack32's values: exact in BF16 and in FP16)
+            const float k0 = e4m3_value((uint8_t) (r.sc & 0xffu)) * (16384.0f * kV7RowScale),
+                        k1 = e4m3_value((uint8_t) (r.sc >> 8)) * (16384.0f * kV7RowScale);
+            const uint32_t wv[4] = {r.a[0].x, r.a[0].y, r.a[0].z, r.a[0].w};
+            for (int g = 0; g < N / 8; ++g) {   // (a word: 8 codes, 8 values)
+                const float ks = g < 2 ? k0 : k1;
+                H8 u;
+#pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    const uint32_t b = wv[g] >> (8 * i);
+                    u.h[i] = __floats2half2_rn(e2m1_val14(b) * ks, e2m1_val14(b >> 4) * ks);
+                }
+                *(uint4*) (dst + 8 * g) = u.v;
+            }
+        } else {
+            for (int i = 0; i < N; i += 8) *(uint4*) (dst + i) = make_uint4(0u, 0u, 0u, 0u);
+        }
+    };
+    // 1. the scores: a round of 256 rows, a warp 16 of them, the 512 values in passes of 32 (a step: a pass of a
+    // round; its rows fetched during the step before)
+    {
+        constexpr int P1 = d / 32;
+        const int steps = (total + kV7Rows1 - 1) / kV7Rows1 * P1;
+        Raw rw;
+        if (steps > 0 && tid < 2 * kV7Rows1) fetch(tid >> 1, (tid & 1) * 16, 16, rw);
+        wm::fragment<wm::accumulator, 16, 16, 16, float> acc;
+        wm::fill_fragment(acc, 0.0f);
+        for (int st = 0; st < steps; ++st) {
+            const int r0 = st / P1 * kV7Rows1, kc = st % P1 * 32;
+            __syncthreads();   // (the step before's MMAs done with Ks)
+            put(rw, 16, Ks + (tid >> 1) * kV7LdK + (tid & 1) * 16);
+            __syncthreads();
+            if (st + 1 < steps) fetch((st + 1) / P1 * kV7Rows1 + (tid >> 1), (st + 1) % P1 * 32 + (tid & 1) * 16, 16, rw);
+            if (warp * 16 < kV7Rows1 && r0 + warp * 16 < total) {
+#pragma unroll
+                for (int kk = 0; kk < 32; kk += 16) {
+                    wm::fragment<wm::matrix_a, 16, 16, 16, __half, wm::row_major> ah;
+                    wm::fragment<wm::matrix_b, 16, 16, 16, __half, wm::col_major> b;
+                    wm::load_matrix_sync(ah, Qh + kc + kk, kV7LdQ);
+                    wm::load_matrix_sync(b, Ks + warp * 16 * kV7LdK + kk, kV7LdK);
+                    wm::mma_sync(acc, ah, b, acc);
+                }
+            }
+            if (kc == d - 32) {
+                if (warp * 16 < kV7Rows1 && r0 + warp * 16 < total)
+                    wm::store_matrix_sync(S + r0 + warp * 16, acc, kV7LdS, wm::mem_row_major);
+                wm::fill_fragment(acc, 0.0f);
+            }
+        }
+    }
+    __syncthreads();
+    // 2. the softmax of head `warp`, FP32: a lane its 20 columns in registers (S's room becomes P's)
+    constexpr int PL = kV7Max / 32;
+    float pv[PL];
+    {
+        float m = -INFINITY;
+#pragma unroll
+        for (int i = 0; i < PL; ++i) {
+            const int j = lane + 32 * i;
+            pv[i] = j < total ? S[warp * kV7LdS + j] * qf[warp] : -INFINITY;
+            m = fmaxf(m, pv[i]);
+        }
+        for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+        float s = 0.0f;
+#pragma unroll
+        for (int i = 0; i < PL; ++i) {
+            pv[i] = lane + 32 * i < total ? expf(pv[i] - m) : 0.0f;
+            s += pv[i];
+        }
+        for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
+        if (lane == 0) den_s[warp] = s + expf(sink[hb + warp] - m);
+    }
+    __syncthreads();
+#pragma unroll
+    for (int i = 0; i < PL; ++i) {
+        const int j = lane + 32 * i;
+        const float v = pv[i] * kV7PScale;
+        const __half hi = __float2half_rn(v);
+        Ph[warp * kV7LdS + j] = hi;
+        Pl[warp * kV7LdS + j] = __float2half_rn(v - __half2float(hi));
+    }
+    if (lane < kV7LdS - kV7Max) Ph[warp * kV7LdS + kV7Max + lane] = Pl[warp * kV7LdS + kV7Max + lane] = __float2half_rn(0.0f);
+    // 3. O = P V: a round of 32 rows; a warp its 32 of the 512 columns (2 accumulators, and 2 for the low parts)
+    wm::fragment<wm::accumulator, 16, 16, 16, float> o[2], ol[2];
+    for (int f = 0; f < 2; ++f) {
+        wm::fill_fragment(o[f], 0.0f);
+        wm::fill_fragment(ol[f], 0.0f);
+    }
+    {
+        const int r = tid >> 4, v0 = (tid & 15) * 32;
+        Raw rv;
+        if (r < kV7RowsV && total > 0) fetch(r, v0, 32, rv);
+        for (int r0 = 0; r0 < total; r0 += kV7RowsV) {
+            __syncthreads();   // (the V rows' room free: the last round's MMAs / phase 2's writes done)
+            if (r < kV7RowsV) put(rv, 32, Vs + r * kV7LdQ + v0);
+            __syncthreads();
+            if (r < kV7RowsV && r0 + kV7RowsV < total) fetch(r0 + kV7RowsV + r, v0, 32, rv);
+#pragma unroll
+            for (int rt = 0; rt < kV7RowsV; rt += 16) {
+                if (r0 + rt >= total) break;
+                wm::fragment<wm::matrix_a, 16, 16, 16, __half, wm::row_major> ah, al;
+                wm::load_matrix_sync(ah, Ph + r0 + rt, kV7LdS);
+                wm::load_matrix_sync(al, Pl + r0 + rt, kV7LdS);
+#pragma unroll
+                for (int f = 0; f < 2; ++f) {
+                    wm::fragment<wm::matrix_b, 16, 16, 16, __half, wm::row_major> b;
+                    wm::load_matrix_sync(b, Vs + rt * kV7LdQ + warp * 32 + f * 16, kV7LdQ);
+                    wm::mma_sync(o[f], ah, b, o[f]);
+                    wm::mma_sync(ol[f], al, b, ol[f]);
+                }
+            }
+        }
+    }
+    __syncthreads();
+    for (int f = 0; f < 2; ++f) {
+#pragma unroll
+        for (int i = 0; i < o[f].num_elements; ++i) o[f].x[i] += ol[f].x[i];
+        wm::store_matrix_sync(Os + warp * 32 + f * 16, o[f], 512, wm::mem_row_major);
+    }
+    __syncthreads();
+    for (int i = tid; i < 16 * d; i += kV7Threads) {
+        const int h = i / d, c = i % d;
+        out[((size_t) t * heads + hb + h) * d + c] = Os[i] / (kV7RowScale * kV7PScale) / den_s[h];
+    }
+#else
+    __trap();
+#endif
+}
+// sm_75 V7 attention availability: the 64 KiB shared layout above; off unless asked while it is measured.
+static bool attn_v7_now() {
+    static const bool off = [] {
+        const char* e = std::getenv("DS4_ATTN_V7");
+        return e == nullptr || std::atoi(e) == 0;
+    }();
+    static std::atomic<int> known[64];
+    int dev = 0;
+    if (off || cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    int v = known[dev].load(std::memory_order_relaxed);
+    if (v == 0) {
+        cudaDeviceProp pr{};
+        v = cudaGetDeviceProperties(&pr, dev) == cudaSuccess && pr.major == 7 &&
+                    cudaFuncSetAttribute(sparse_attn_v7_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         (int) kV7Smem) == cudaSuccess
+                ? 2 : 1;
+        cudaGetLastError();
+        known[dev].store(v);
+    }
+    return v == 2;
+}
+#endif
+
 void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int* sel, int sel_stride,
                  const AttnRows& a, const float* sink, int heads, int d, int T, float scale, float* out, cudaStream_t s,
                  int ckv_fmt, int heads_per_block, const AttnScratch* scr) {
@@ -2693,6 +2947,13 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
                                                                        sink, heads, d, scale, out);
         return;
     }
+#if !defined(STRATA_USE_HIP)
+    if (a.gen && a.kcap + a.win <= kV7Max && heads % 16 == 0 && attn_v7_now()) {
+        strata_ds4_launch(sparse_attn_v7_kernel, dim3(heads / 16, T), kV7Threads, kV7Smem, s, q, win,
+                          (const uint8_t*) ckv, sel, sel_stride, a, sink, heads, scale, out);
+        return;
+    }
+#endif
     // a decode step / short verify window of packed rows: the split-KV kernel (Strata's CUDA lab, ds4_attn_split.cuh; 2.9x at
     // one query on an A4000).  The same inputs; the merge sums the chunks in another order, so the bits differ in the last
     // place (4e-7 against a double reference).  DS4_ATTN_SPLIT=1 turns it on (off by default: no measurable decode gain on the R9700 box, the decode is bound elsewhere).
