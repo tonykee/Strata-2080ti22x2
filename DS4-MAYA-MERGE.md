@@ -630,3 +630,11 @@ fixed expert profile, ZC=0: 725.4 / 30.24; ZC=1: 724.5 / 30.79
   loses once the host-side ffn stall is gone.  It stays off.
 - The v1 pack (IQ1_S down) in the same state: 561.9 tok/s and decode 11.9, its profile placing only 5,344
   experts in VRAM and 41% of decode picks on the CPU lane.  The v2 pack stays.
+
+## 220 W multi-turn with ZC + AR2_DECODE + slab 2048 (2026-11-09)
+
+The same 4-turn conversation through the server: 23.0 / 25.3 / 33.8 / 33.6 tok/s, CPU lane 36.0 -> 25.2%.
+The earlier 44.1 / 47.4 rounds were a particular answer's repeating pattern with lookup windows to 7-8 rows;
+the slab change moves the prompt GEMM's rounding, so the greedy answer (and its repetition) differs and the
+lookup window no longer extends.  The 13K decode is the stable number: 30.8 tok/s; 40+ appears on warm
+conversations whose answers repeat, and is content-dependent, not a floor.
