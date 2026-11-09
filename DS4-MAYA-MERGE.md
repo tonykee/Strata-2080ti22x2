@@ -1247,3 +1247,12 @@ Two samples together: mean 31.4, median ~31.2, 8 of 12 turns at or above 30; the
 (a 5-line Python example, an async version) are 26.1-29.5.  CPU lane 1.0-1.6%, prefill of the cached turns
 46-73 tok/s.  So the *typical* 6-turn decode is 30-40; the code turns need another ~2-4 tok/s, which is the
 per-round head/draft/host time, not the attention any more.
+
+## The remaining knobs need a clean boot (2026-11-10)
+
+`DS4_AHEAD=0` (no decode lookahead) was tried after several loads; the warm-up fell to 542.9 (against 792 for
+the two fast samples) and the 6-turn read 19.9-28.2, so the comparison is the host state, not the setting.
+The remaining candidates (the lookahead, the 3,6 TP share for the head card, a draft/head rebalance, an MTP
+draft graph) all need a same-state A/B; one boot gives about two fast loads.  The clean protocol is in
+`bench/ds4-baseline/README.md`: reserve the pool once, `STRATA_WARMUP=1`, two loads, the warm-up 10.7K rate as
+the gauge.
