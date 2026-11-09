@@ -656,3 +656,18 @@ DS4_FLOW_TP=1 in the fast state: 695.8 tok/s - worse; stays off
 The copies aggregate ~9.5 GB/s over the two PCIe 3.0 links (each 12.2 GB/s), with the 2.9 s of waits spread
 over the layers; the ring depth and batch granularity are not the limit in these tests.  Next would be a
 persistent per-expert copy schedule or more VRAM experts, not another ring size.
+
+## The v1 pack was slow because of its profile, not its quant (2026-11-09)
+
+Earlier the v1 pack (IQ1_S down, larger dense weights) measured 561.9 tok/s with 41% of decode picks on the
+CPU lane.  The same pack with the v2 pack's learned expert profile (`--expert-profile <v2>/expert-profile.bin
+--profile-readonly`) at the same fast state:
+
+```text
+v1 pack + v2 profile: prefill 18.38 s = 710.6 tok/s, decode 32.71 tok/s, CPU lane 504 of 2670 (18.9%)
+v2 pack (default):    prefill 17.85 s = 731.7 tok/s, decode 30.8 tok/s
+```
+
+The profile was the whole difference (CPU lane 41% -> 18.9%).  v1 trades 3% prefill for 6% decode: its down
+matrices are IQ1_S (1.06 bpw) instead of IQ2_XXS, but its dense weights are 0.9 GB larger, so fewer experts fit
+VRAM.  The default stays v2 (higher quality, faster prefill); v1 is an option for decode-heavy use.
