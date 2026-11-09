@@ -791,3 +791,7 @@ tokens identical: 455,2502,344,260,1606,...
 The route pair removes one more launch a layer; the decode's per-token time is set by the CPU lane/expert
 tail, so the gain is within run-to-run noise.  `DS4_ROUTE_FUSE=1` (default) enables the gate pair and the route
 pair; `0` disables both.
+
+Gated and default on, the same 4-turn conversation through the server: 23.3 / 24.9 / 25.6 / **48.0 tok/s**
+(the fourth answer 50 of 51 drafts, positions 1..5) - the best warm decode measured, against 47.3 before the
+route pair and 53.0 for the v1 pack.
