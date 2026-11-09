@@ -1130,3 +1130,23 @@ So the remaining ~20% is split between the GPU kernels (attention already the fa
 router/index ~10%) and the H2D stream running at ~70% of the link with ~2.7 s unhidden.  Config toggles, the
 packed kernel, the AR variants and the ring/part changes are all measured and do not move it.  The next real
 lever is a lower-bit gate/up pack (fewer bytes) or a deeper copy/kernel redesign, not a setting or a port.
+
+## Multi-turn decode: Strata holds, Maya's prefill does not (2026-11-09)
+
+Fast state (warm-up 10.7K 802 tok/s), the same 6-turn conversation (MoE explanation, three follow-ups, a code
+example, async, errors, summary; 128 tokens a turn, greedy) through both servers:
+
+```text
+Strata hybrid + skip 2048 + warmup:  decode 23.6 / 22.3 / 19.1 / 19.8 / 20.0 / 25.0 tok/s
+  after the 6 turns: 13K prefill 800.1 tok/s (clean 810), cold decode 17.8 / 19.9 / 20.7 (median 19.9)
+  CPU lane 1.1-2.5%, no monotonic decline; the conversation does not poison the expert cache
+
+Maya v1, the next load on the same boot: warm-up 10.7K 489.7 (its clean boot: 1000)
+  decode 36.1 / 33.6 / 24.9 / 28.8 / 30.1 / 35.1 tok/s; vram_hit 0.9854
+```
+
+Strata's decode on this generic content is 19-25 tok/s, stable across the turns, and its prefill is unchanged
+after the conversation.  Maya's warm decode is 10-15 tok/s higher on the same content, but its prefill on that
+load is 490 against Strata's 800 - the clean 1018/45.5 does not survive reloads, which is the instability seen
+in practice.  Strata's warm/repetitive answers with the lookup window still reach 37-53 tok/s; the 19-25 is the
+generic-content floor, not a decline.
