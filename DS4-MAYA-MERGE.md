@@ -1150,3 +1150,23 @@ after the conversation.  Maya's warm decode is 10-15 tok/s higher on the same co
 load is 490 against Strata's 800 - the clean 1018/45.5 does not survive reloads, which is the instability seen
 in practice.  Strata's warm/repetitive answers with the lookup window still reach 37-53 tok/s; the 19-25 is the
 generic-content floor, not a decline.
+
+## Decode experiments: the window buys 5%, the rest is per-token compute (2026-11-09)
+
+The 6-turn conversation is stable at 19-25 tok/s (section above).  Tried on it:
+
+```text
+DS4_ATTN_SPLIT=1 (split-KV):        decode 26.3 / 23.3 / 19.0 / 18.1 / 20.1 / 25.4  (no gain)
+max-context 32768:                  inconclusive (warm-up 546, the state had degraded)
+DS4_DSPARK_CONF=0.3 (CLI, 128 tok): 27 rounds, 4.74 tokens a round, 21.22 tok/s
+DS4_DSPARK_CONF default 0.5:        36 rounds, 3.56 tokens a round, 20.15 tok/s  (+5.3% for 0.3)
+DS4_DSPARK_CONF=0.2:                3.56 tokens a round, 20.17 tok/s (output path differs)
+```
+
+A longer draft window does raise the accepted tokens per round by a third, but the verification cost grows with
+the rows, so the per-token gain is ~5%; the outputs differ too (the window's row count changes the GEMM
+rounding, as the attention slab does).  The per-token cost of ~50 ms is the model's compute (61 layers, 4
+experts, small-M expert GEMMs) plus the head wait and the AR, not a scheduling knob.  The CLI's 31.9 tok/s on
+the 13K prompt is a repetitive continuation with 100% draft acceptance; the generic 6-turn content is 19-25.
+Closing the decode gap to Maya's clean 45.5 needs grouped/fused expert GEMMs and a cheaper head/AR (kernel
+work), not another setting.
