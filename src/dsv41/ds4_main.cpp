@@ -256,10 +256,13 @@ float dspark_cum_default(const strata::ds4::Model& m) {
 struct Lookup {
     strata::spec::SuffixDrafter sfx;
     strata::spec::DraftPolicy policy;
-    std::vector<int32_t> buf;
+    std::vector<int32_t> buf, chain_buf;
+    int chain_max = 0;   // --lookup-chain N: at most N lookup tokens after DSpark's drafts (0: off)
     long long windows = 0, offered = 0, accepted = 0;   // the lookup's own rounds and drafts
-    Lookup(int min_match, int max_t, size_t cap)
-        : sfx(min_match, 64, cap), policy(max_t, 0.25), buf((size_t) std::max(1, max_t) + 1) {}
+    long long chain_rounds = 0, chain_offered = 0, chain_accepted = 0;   // --lookup-chain
+    Lookup(int min_match, int max_t, size_t cap, int chain = 0)
+        : sfx(min_match, 64, cap), policy(max_t, 0.25), buf((size_t) std::max(1, max_t) + 1),
+          chain_buf((size_t) std::max(1, max_t) + 1), chain_max(chain) {}
     void start(const std::vector<int32_t>& ctx) {   // a request's history: what the state has consumed
         sfx.reset();
         sfx.append(ctx.data(), ctx.size());
@@ -331,6 +334,7 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
             ++keep;
         int lk_match = 0, lk_k = 0;
         bool from_lk = false;
+        int keep_mtp = 0, chain_k = 0, chain_match = 0;
         if (lk != nullptr && room > 1) {
             lk->policy.set_context(m.pos());
             // (at most 8 drafts: the head walks 8 rows in one pass; a lookup 15 rows long costs far more than
@@ -358,6 +362,29 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
                 }
             }
         }
+        keep_mtp = keep;
+        // --lookup-chain: the lookup continues after the drafts DSpark kept, so a repetitive answer can verify
+        // past DSpark's 5-row block; the policy says whether the extra rows pay for themselves
+        if (lk != nullptr && lk->chain_max > 0 && !from_lk && keep > 0 && room - 1 > keep) {
+            float p = 1.0f;
+            for (int i = 0; i < keep; ++i) p *= conf[(size_t) i];
+            const int cap = std::min(std::min(lk->chain_max, room - 1 - keep),
+                                     std::min(8, m.verify_max() - 1) - keep);
+            if (cap > 0) {
+                const int c = lk->sfx.propose_after(drafts.data(), keep, cap, lk->chain_buf.data());
+                if (c > 0) {
+                    chain_match = lk->sfx.last_match();
+                    const int k = lk->policy.chain(keep + 1, std::clamp(p, 0.0f, 1.0f), c, chain_match);
+                    if (k > 0) {
+                        const int add = std::min(k, c);
+                        if ((int) drafts.size() < keep + add) drafts.resize((size_t) (keep + add));
+                        for (int i = 0; i < add; ++i) drafts[(size_t) (keep + i)] = lk->chain_buf[(size_t) i];
+                        keep += add;
+                        chain_k = add;
+                    }
+                }
+            }
+        }
         if (keep > 0) {
             drafts.resize((size_t) keep);
             int acc = 0, next = -1;
@@ -378,7 +405,17 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
             offered = keep;
             accepted = acc;
             if (lk != nullptr) {
-                lk->policy.observe(from_lk, keep + 1, acc, lk_match, rt_now() - rt0);
+                if (chain_k > 0) {   // the DSpark window's own verdict, then the chain's
+                    const int mtp_acc = std::min(acc, keep_mtp);
+                    lk->policy.observe(false, keep_mtp + 1, mtp_acc, 0, rt_now() - rt0);
+                    const int ca = std::max(0, acc - keep_mtp);
+                    lk->policy.observe_chain(keep_mtp + 1, chain_k, ca, chain_match, rt_now() - rt0);
+                    ++lk->chain_rounds;
+                    lk->chain_offered += chain_k;
+                    lk->chain_accepted += ca;
+                } else {
+                    lk->policy.observe(from_lk, keep + 1, acc, lk_match, rt_now() - rt0);
+                }
                 lk->windows += from_lk ? 1 : 0;
                 lk->offered += from_lk ? keep : 0;
                 lk->accepted += from_lk ? acc : 0;
@@ -598,11 +635,11 @@ bool parse_gen(const std::string& line, Req& r, bool geni) {
 }
 
 int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float conf_min, const std::string& pack,
-          int suffix_draft = 0) {
+          int suffix_draft = 0, int lookup_chain = 0) {
     std::vector<int> eos = parse_ids(eos_list);
     std::unique_ptr<Lookup> lk;   // (one policy over the engine's life, as Maya's prompt lookup)
     if (spec && suffix_draft > 0)
-        lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096);
+        lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
     if (m.seq_count() > 1)   // (--parallel: n conversations at once, GEN rid=<id>)
         std::printf("READY %lld stop multi=%d\n", (long long) m.max_context(), m.seq_count());
@@ -2594,6 +2631,7 @@ int main(int argc, char** argv) {
     std::string ids_s, dump, eos = "1";
     int n = 0, window = 0;   // (0: the model's feed unit - a whole prompt on the chunked path; 16 for the scoring runs)
     int suffix_draft = 3;    // --suffix-draft N: the prompt lookup's shortest match (0: off), Maya's 3
+    int lookup_chain = 0;    // --lookup-chain N: lookup tokens after DSpark's drafts (0: off), Maya's --lookup-chain
                              // (the cold-start gate in round(): a probe only on a match >= 24 tokens, then it must
                              //  have kept half its drafts; the 832-token JSON list then runs no lookup at all)
     bool spec = true;
@@ -2677,6 +2715,7 @@ int main(int argc, char** argv) {
         else if (a == "--spec-eval") spec_ids = val("--spec-eval");
         else if (a == "--serve") serve_mode = true;
         else if (a == "--suffix-draft") suffix_draft = std::max(0, std::atoi(val("--suffix-draft").c_str()));
+        else if (a == "--lookup-chain") lookup_chain = std::max(0, std::atoi(val("--lookup-chain").c_str()));
         else if (a == "--parallel") {   // (--serve: conversations at once)
             o.seqs = std::atoi(val("--parallel").c_str());
             if (o.seqs < 1 || o.seqs > 8) {
@@ -2725,8 +2764,8 @@ int main(int argc, char** argv) {
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
     std::unique_ptr<Lookup> lk;   // (the CLI's prompt lookup; the server's is wired in serve())
     if (!serve_mode && suffix_draft > 0)
-        lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096);
-    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, suffix_draft);
+        lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
+    if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, suffix_draft, lookup_chain);
     const int window_given = window;
     if (window == 0) window = 16;   // (the scoring / profiling runs; the plain run below takes the model's feed unit)
     if (!prof_ids.empty()) return profile_run(m, prof_ids, window);
@@ -2881,6 +2920,9 @@ int main(int argc, char** argv) {
     if (lk && lk->windows > 0)
         std::fprintf(stderr, "prompt lookup: %lld rounds, %lld of its %lld drafts kept\n", lk->windows, lk->accepted,
                      lk->offered);
+    if (lk && lk->chain_rounds > 0)
+        std::fprintf(stderr, "lookup chain: %lld rounds, %lld of its %lld drafts kept\n", lk->chain_rounds,
+                     lk->chain_accepted, lk->chain_offered);
     if (std::getenv("DS4_TOKLOG") != nullptr && tok_ms.size() > 8) {   // the decode's tokens after the first (which carries the prompt's tail)
         std::vector<double> v(tok_ms.begin() + 1, tok_ms.end());
         std::sort(v.begin(), v.end());

@@ -561,3 +561,23 @@ DS4_W16_MB=64 alone:            q_b + rope 4.93 s   (no gain: the slab, not the 
 run was 662 tok/s and the slab-1024 run 719 tok/s; the slab change is worth roughly 0.5-0.8 s of the 13K
 prompt, the rest of that pair's difference was the host.  Maya's own q stage (826 ms) still shows a ~4x gap in
 this stage that the slab does not close.
+
+## Lazy drafter: not applicable on TP2; lookup chain wired (2026-11-09)
+
+Maya's lazy drafter (`draft_lazy`) only turns on when the **head group has one member**:
+`lazy = draft_lazy && hg.size() == 1 && dump_d == nullptr && (conf_min > 0 || cum_min > 0)`.  A TP2 run's
+head group is both GPUs, so Maya's own condition keeps the lazy path off there; there is nothing to port for
+this host.  (The measured draft cost is 6.2-6.5 ms a round, so the ceiling was small anyway.)
+
+Lookup chain (`--lookup-chain N`, default 0 off): after DSpark's kept prefix, `SuffixDrafter::propose_after`
+extends the lookup and `DraftPolicy::chain` decides how many rows to append, up to 8.  Natural 5347-token
+prompt, same host state, 64 tokens:
+
+```text
+--lookup-chain 0: 13 rounds, 50/50 drafts, 4.92 tokens/round, 16.69 tok/s
+--lookup-chain 4: 13 rounds, 55/50 drafts, 4.92 tokens/round, 16.50 tok/s
+                 2 chain rounds, 3 of 7 chained drafts kept
+```
+
+Neutral on that prompt (the chain rows were mostly rejected); it stays opt-in for long repeats.  Every chained
+draft is verified like any other, so the output is unchanged.
