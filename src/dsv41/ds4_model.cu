@@ -6369,6 +6369,14 @@ struct Model::Impl {
         return true;
     }
 
+    // STRATA_DS4_LOAD_DROP_CACHE (1, default): once an expert's bytes are copied into RAM, drop their pages from the
+    // file cache (posix_fadvise DONTNEED) instead of holding the same bytes twice: without it a pack whose copies and
+    // their cache do not fit reclaims in the copying thread (0.8 GB/s measured, and the next load starts under memory
+    // pressure).  0 keeps every region's pages (a restart then starts warm).
+    static bool load_drop_cache() {
+        const char* v = std::getenv("STRATA_DS4_LOAD_DROP_CACHE");
+        return v == nullptr || std::atoi(v) != 0;
+    }
     // a GGUF's CPU-lane experts copied into RAM (copy_mode), decided once VRAM's are in - on a unified-memory APU the GPU
     // has taken its share of the RAM by then, so the copies only get what it leaves.  `hot`: the CPU lane's experts, the
     // most-routed first.  --mmap-experts off: all that fit beside kRamMargin (a warning if not all do); on and auto:
@@ -6517,6 +6525,8 @@ struct Model::Impl {
         std::atomic<size_t> ji{0};
         std::atomic<bool> bad{false};
         std::atomic<int64_t> done_b{0};
+        const bool drop_copy_cache = load_drop_cache();
+        std::atomic<uint64_t> cache_hint_bytes{0};
         std::vector<std::thread> th;
         for (int t = 0; t < 12 && !jobs.empty(); ++t)
             th.emplace_back([&] {
@@ -6530,6 +6540,16 @@ struct Model::Impl {
                                             ram_part[(size_t) j.slot][(size_t) X] + cp_lay[(size_t) l.il][(size_t) r]))
                                 bad.store(true);
                     }
+                    if (drop_copy_cache && !bad.load()) {
+                        uint64_t hinted = 0;
+                        for (int r = 0; r < 3; ++r) {
+                            const uint64_t nb = (uint64_t) (mx_n(r) / NH) * mx_row_b(l, r) * NH;
+                            os::advise(pk.fds[(size_t) l.mx_file[r]], l.mx_off[r] + (uint64_t) j.e * l.mx_stride[r], nb,
+                                       false);
+                            hinted += nb;
+                        }
+                        cache_hint_bytes.fetch_add(hinted, std::memory_order_relaxed);
+                    }
                     const int64_t db = done_b.fetch_add((int64_t) l.blob) + (int64_t) l.blob;
                     if (o.verbose && i % 2048 == 0)
                         std::fprintf(stderr, "ds4: copying experts %zu / %zu (%.1f GB, %.2f GB/s)\n", i, jobs.size(), db / 1e9,
@@ -6542,6 +6562,9 @@ struct Model::Impl {
             return false;
         }
         for (const Job& j : jobs) L[(size_t) j.layer].ram[(size_t) j.e] = j.slot;
+        if (drop_copy_cache)
+            std::fprintf(stderr, "ds4: copied expert cache: DONTNEED hints for %.3f GB of whole source pages (eviction is advisory)\n",
+                         (double) cache_hint_bytes.load() / 1e9);
         copy_mode = true;
         ram_held = (int) jobs.size();
         double cb = 0;
