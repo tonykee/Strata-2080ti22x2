@@ -6,7 +6,13 @@ cd /home/likan/strata-latest || exit 1
 
 PIDFILE=.strata-ds4-v2.pid
 FORCE=0
-[ "${1:-}" = "--force" ] && FORCE=1
+RELEASE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        --release) RELEASE=1 ;;
+    esac
+done
 
 stop_pid() {
     pid=$1
@@ -55,21 +61,25 @@ if command -v pgrep >/dev/null 2>&1; then
     done
 fi
 
-# The engine is gone now: return the huge-page pool to normal memory.  If no pool is
-# reserved (for example the start used DS4_HUGEPAGE_GB=0), this needs no sudo at all.
+# The engine is gone now.  By default the huge-page pool is KEPT: the next DeepSeek start
+# reuses it (start_cpu_lane.sh reserves only when the pool is missing), so a stop/start of the
+# server does not shuffle 96 GB of pages.  Measured on this PC: the first two engine starts
+# after a reboot run at ~710 tok/s; later starts fall to ~560 until the next reboot, whether
+# the pool is kept or re-reserved.  Use --release only when another model needs the RAM.
 TOTAL=$(awk '/^HugePages_Total:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
-COMPACT=${DS4_COMPACT_ON_STOP:-0}
-if [ "${TOTAL:-0}" -gt 0 ] || [ "$COMPACT" = 1 ]; then
-    if [ "$(id -u)" -eq 0 ]; then
-        tools/ds4_hugepages_release.sh
-    else
-        echo "releasing/compacting host memory (sudo)..."
-        RELEASE=tools/ds4_hugepages_release.sh
-        [ -x /usr/local/sbin/strata-ds4-hugepages-release ] && RELEASE=/usr/local/sbin/strata-ds4-hugepages-release
-        sudo "$RELEASE" || echo "warning: huge-page release failed; run sudo $RELEASE" >&2
+if [ "$RELEASE" -eq 1 ]; then
+    if [ "${TOTAL:-0}" -gt 0 ] || [ "${DS4_COMPACT_ON_STOP:-0}" = 1 ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            tools/ds4_hugepages_release.sh
+        else
+            echo "releasing/compacting host memory (sudo)..."
+            REL=tools/ds4_hugepages_release.sh
+            [ -x /usr/local/sbin/strata-ds4-hugepages-release ] && REL=/usr/local/sbin/strata-ds4-hugepages-release
+            sudo "$REL" || echo "warning: huge-page release failed; run sudo $REL" >&2
+        fi
     fi
 else
-    echo "no reserved huge-page pool; ordinary THP arena exits without sudo (set DS4_COMPACT_ON_STOP=1 to compact)."
+    echo "huge-page pool kept (HugePages_Total=${TOTAL:-0}); pass --release when switching to another model."
 fi
 
 if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ':8000 '; then
