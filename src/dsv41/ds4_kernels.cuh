@@ -95,6 +95,9 @@ void gemv_f16_rows(const uint16_t* W, const float* x, size_t ldx, int n, int k, 
 /// inference computes them (linear(x.float(), weight.float())) - a warp a row, the same summing order for any T, so
 /// the token, window and chunk paths get the same bits.
 void gemv_f32(const float* W, const float* x, int n, int k, int T, float* y, int ldy, cudaStream_t s);
+/// DS4_ROUTE_FUSE: the gate GEMVs of two consecutive layers in one launch (each row gemv_f32's bits)
+void gemv_f32_pair(const float* W0, int n0, float* y0, const float* W1, int n1, float* y1, const float* x, int k,
+                   int T, float* unused, int ldy, cudaStream_t s);
 
 /// The router, row t: scores = sqrt(softplus(logits[t])) (n experts, rows 1024 apart), the top `k` of scores + bias;
 /// weights from the unbiased scores, normalized to sum 1 (+1e-20) and times route_scale -> idx[t][i], w[t][i] (rows

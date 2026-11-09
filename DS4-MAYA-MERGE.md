@@ -759,3 +759,18 @@ first tokens identical: 455,2502,344,260,1606,...
 The persistent schedule removes the host gaps between `copy_ahead` calls (about 0.3% here); the ring slots
 and the copy/compute balance still set the pace, so it is a small but exact gain.  Enabled in the hybrid and
 v2 tuned configs.
+
+## DS4_ROUTE_FUSE: the gate GEMV pair ported (2026-11-09)
+
+Ported Maya's `gemv_f32_pair_kernel` / `gemv_f32_pair_rows_kernel` (F32): the decode layer's router gate and the
+next layer's lookahead gate (the guess the prefetch already made) in one launch.  Each row is gemv_f32_kernel's
+code, so the bits match; `DS4_ROUTE_FUSE=0` turns it off (default on).  Hybrid 13K, same state, 16 tokens:
+
+```text
+off: decode 26.29 tok/s, layers 10.65 ms/token
+on:  decode 26.50 tok/s, layers 10.57 ms/token; tokens identical
+```
+
+The routing/guess kernels (`route_pair`) are not ported yet: Strata's route_publish carries the plan pointer,
+the VL bits and the cache-substitution argument, and the fused kernel would have to reproduce that state.  The
+gate pair alone is a small exact gain (~0.8%).

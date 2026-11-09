@@ -509,6 +509,35 @@ __global__ void __launch_bounds__(kThreads) gemv_f32_kernel(const float* __restr
     if (lane == 0) y[(size_t) t * ldy + row] = acc;
 }
 
+// DS4_ROUTE_FUSE: two gemv_f32_kernel launches in one grid - its first cdiv(n0, 8) blocks are W0's rows into y0,
+// the rest W1's into y1 - each row exactly gemv_f32_kernel's code (a warp a row, a lane's float4s c = lane + 32 j,
+// fmaf, the warp's sum), so each row's bits
+__global__ void __launch_bounds__(kThreads) gemv_f32_pair_kernel(const float* __restrict__ W0, int n0,
+                                                                 float* __restrict__ y0, const float* __restrict__ W1,
+                                                                 int n1, float* __restrict__ y1,
+                                                                 const float* __restrict__ x, int k) {
+    const int b0 = (n0 + kThreads / 32 - 1) / (kThreads / 32);
+    const bool second = (int) blockIdx.x >= b0;
+    const float* W = second ? W1 : W0;
+    const int n = second ? n1 : n0;
+    float* y = second ? y1 : y0;
+    const int row = ((int) blockIdx.x - (second ? b0 : 0)) * (kThreads / 32) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    if (row >= n) return;
+    const float4* w = (const float4*) (W + (size_t) row * k);
+    const float4* xv = (const float4*) x;
+    float acc = 0.0f;
+    for (int c = lane; c < k / 4; c += 32) {
+        const float4 a = w[c], b = xv[c];
+        acc = fmaf(a.x, b.x, acc);
+        acc = fmaf(a.y, b.y, acc);
+        acc = fmaf(a.z, b.z, acc);
+        acc = fmaf(a.w, b.w, acc);
+    }
+    acc = warp_sum(acc);
+    if (lane == 0) y[row] = acc;
+}
+
 // ... a prompt's rows: a block 8 rows of W for kGemvT tokens, their inputs kGemvK float4s at a time in shared
 // memory.  Each (token, row) sums as the one-token kernel does (a lane's float4s c = lane + 32 j in order, then
 // the warp's sum), so the prompt's router logits keep the token path's bits - with W read once per kGemvT tokens,
@@ -2619,6 +2648,64 @@ void gemv_f16_rows(const uint16_t* W, const float* x, size_t ldx, int n, int k, 
     if (T > 0)
         strata_ds4_launch(gemv_f16_rows_kernel, dim3(cdiv(n, kThreads / 32), cdiv(T, kRowsT)), kThreads, 0, s, W, x, ldx, n, k, T, alpha,
                                                                                                y, ldy);
+}
+
+__global__ void __launch_bounds__(kThreads) gemv_f32_pair_rows_kernel(const float* __restrict__ W0, int n0,
+                                                                      float* __restrict__ y0,
+                                                                      const float* __restrict__ W1, int n1,
+                                                                      float* __restrict__ y1,
+                                                                      const float* __restrict__ x, int k, int T,
+                                                                      int ldy) {
+    __shared__ float4 xs[kGemvT][kGemvK];
+    const int b0 = (n0 + kThreads / 32 - 1) / (kThreads / 32);
+    const bool second = (int) blockIdx.x >= b0;
+    const float* W = second ? W1 : W0;
+    const int n = second ? n1 : n0;
+    float* y = second ? y1 : y0;
+    const int row = ((int) blockIdx.x - (second ? b0 : 0)) * (kThreads / 32) + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31, t0 = blockIdx.y * kGemvT, nt = min(kGemvT, T - t0), k4 = k / 4;
+    const float* w = W + (size_t) min(row, n - 1) * k;
+    float acc[kGemvT];
+#pragma unroll
+    for (int t = 0; t < kGemvT; ++t) acc[t] = 0.0f;
+    for (int c0 = 0; c0 < k4; c0 += kGemvK) {
+        const int nc = min(kGemvK, k4 - c0);
+        __syncthreads();
+        for (int i = (int) threadIdx.x; i < kGemvT * kGemvK; i += kThreads) {
+            const int t = i / kGemvK, c = i % kGemvK;
+            if (t < nt && c < nc) xs[t][c] = ((const float4*) (x + (size_t) (t0 + t) * k))[c0 + c];
+        }
+        __syncthreads();
+        for (int c = lane; c < nc; c += 32) {
+            const float4 a = ((const float4*) (w + (size_t) c0 * 4))[c];
+#pragma unroll
+            for (int t = 0; t < kGemvT; ++t) {
+                const float4 b = xs[t][c];
+                acc[t] = fmaf(a.x, b.x, acc[t]);
+                acc[t] = fmaf(a.y, b.y, acc[t]);
+                acc[t] = fmaf(a.z, b.z, acc[t]);
+                acc[t] = fmaf(a.w, b.w, acc[t]);
+            }
+        }
+    }
+    if (row >= n) return;
+#pragma unroll
+    for (int t = 0; t < kGemvT; ++t)
+        if (t < nt) {
+            const float s = warp_sum(acc[t]);
+            if (lane == 0) y[(size_t) (t0 + t) * ldy + row] = s;
+        }
+}
+
+void gemv_f32_pair(const float* W0, int n0, float* y0, const float* W1, int n1, float* y1, const float* x, int k,
+                   int T, float* /*unused*/, int ldy, cudaStream_t s) {
+    const int b0 = (n0 + kThreads / 32 - 1) / (kThreads / 32);
+    const int b1 = (n1 + kThreads / 32 - 1) / (kThreads / 32);
+    if (T <= 1)
+        strata_ds4_launch(gemv_f32_pair_kernel, dim3(b0 + b1), kThreads, 0, s, W0, n0, y0, W1, n1, y1, x, k);
+    else
+        strata_ds4_launch(gemv_f32_pair_rows_kernel, dim3(b0 + b1, cdiv(T, kGemvT)), kThreads, 0, s, W0, n0, y0, W1, n1,
+                          y1, x, k, T, ldy);
 }
 
 void gemv_f32(const float* W, const float* x, int n, int k, int T, float* y, int ldy, cudaStream_t s) {

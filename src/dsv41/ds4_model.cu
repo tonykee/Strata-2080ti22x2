@@ -14776,18 +14776,31 @@ struct Model::Impl {
             // the routing goes to the service thread through the mailbox (a group's lead publishes it, the members
             // make the same plan) while the device runs the shared expert and the VRAM experts (from the plan the
             // router made), and waits for the answer only before the experts' sum
-            gemv_f32(l.gate_w, d.x, l.n_exp, D, T, d.glog, 1024, s);
             const unsigned sq = wp.seq[l.il];
             const int slot = (int) (sq % kRing);
             const bool lead = mi == 0;
             int na[2] = {0, 0};   // lookahead: the next layers' guesses (their gate on this FFN input), published below
+            const Layer* nx1 = lead ? ahead_layer(L0, 1) : nullptr;
+            // DS4_ROUTE_FUSE: the current router's gate and the next layer's guess in one GEMV launch (the same rows'
+            // bits); without a next layer, or a window too wide for the pair, the single GEMV stays
+            static const bool route_fuse_on = [] {
+                const char* e = std::getenv("DS4_ROUTE_FUSE");
+                return e == nullptr || std::atoi(e) != 0;
+            }();
+            const bool pair1 = route_fuse_on && nx1 != nullptr && T <= kWin && l.n_exp <= 1024 && nx1->n_exp <= 1024 &&
+                               l.gate_w != nullptr && nx1->gate_w != nullptr;
+            if (pair1)
+                gemv_f32_pair(l.gate_w, l.n_exp, d.glog, nx1->gate_w, nx1->n_exp, d.glog_a, d.x, D, T, nullptr, 1024, s);
+            else
+                gemv_f32(l.gate_w, d.x, l.n_exp, D, T, d.glog, 1024, s);
             for (int a = 1; lead && a <= std::min(2, ahead_mode); ++a) {
                 const Layer* nx = ahead_layer(L0, a);
                 if (nx == nullptr) break;
                 const int m = a == 1 ? std::max(1, std::min(kAhead1, nx->k_exp + ahead_extra)) : std::min(kPicks, nx->k_exp);
                 float* gl = d.glog_a + (size_t) (a - 1) * kWin * 1024;
-                gemv_f32(nx->gate_w, d.x, nx->n_exp, D, T, gl, 1024, s);   // (normed with the next layer's FFN
-                                                                         // weights instead: the same hit rate)
+                if (!(a == 1 && pair1))
+                    gemv_f32(nx->gate_w, d.x, nx->n_exp, D, T, gl, 1024, s);   // (normed with the next layer's FFN
+                                                                             // weights instead: the same hit rate)
                 route_ahead(gl, nx->gate_bias, nx->n_exp, m, T, reqs + slot, (a - 1) * kAhead1, s);
                 na[a - 1] = m;
             }
