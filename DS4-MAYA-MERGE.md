@@ -1069,3 +1069,36 @@ stream.
 The ideas from this work that may transfer to Qwen3.8-Flash-Next (`src/qwen35/`) - short-chunk skip-unpicked
 streaming, a huge-page host arena, and the clean-state benchmark gauge, with what q36 already has and what does
 not apply - are collected in `docs/QWEN_PORT_CANDIDATES.md`.  Candidates only: no Qwen measurements yet.
+
+## 13K nsys: the attention is the largest kernel, the AR is 7.3% (2026-11-09)
+
+The 3.5K nsys made the all-reduce look like 28% and the target; at 13K the attention has grown with the
+context and the picture changes (one 13K prompt, same boot, nsys, wall 17.94 s):
+
+```text
+sparse_attn_v7_kernel     27.5%   8.36 s   (640 calls, 13.1 ms avg)
+cuBLAS GEMMs              ~19.4%  7.0 s
+ar_peer_kernel             7.3%   2.24 s   (320 calls, 7.0 ms avg)
+gemv_f32_rows (router)     5.7%   1.74 s
+index_score                4.6%   1.40 s
+set_tc + moe_combine + hc ~10%
+```
+
+So the 20% at 13K is in attention + the dense GEMMs, not the all-reduce.  The AR-side experiments in the same
+state confirm it:
+
+```text
+baseline                        735.2-738.6 tok/s
+slab AR + 16 blocks             741.3  (+0.4%, tokens identical)
+DS4_PEER_AR_F16=1               746.0  (+1.0%, tokens identical here)
+slab + F16                      745.5  (+0.9%)
+attention slab 1024             727.9  (-1%)
+attention slab 4096             738.3  (+0.4%, but greedy tokens differ)
+DS4_ATTN_V7=0                   555.0  (-25%)
+```
+
+The AR is latency/barrier-bound, not bandwidth-bound (halving the wire buys 1%).  The attention slab 2048 and
+v7 stay as they are.  Config-level work is exhausted; the remaining 13K gap needs a different attention kernel
+(Maya's fast path runs `sparse_attn_packed<int 8>`, 8-token packed windows) or a fused GEMM/AR, both kernel
+projects rather than settings.  The slab AR + block-count code is kept as an opt-in experiment
+(`DS4_AR_SLAB=1`, `DS4_PEER_AR_BLOCKS`), default off.

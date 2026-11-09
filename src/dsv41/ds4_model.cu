@@ -752,6 +752,10 @@ struct Chunk {
     int ring_n = 0;
     cudaStream_t cs = nullptr;
     cudaEvent_t filled[kParts] = {}, freed[kParts] = {};
+    // DS4_AR_SLAB: the attention's all-reduce in slabs on a stream of its own, overlapped with the next slab's
+    // attention (the rows are disjoint; each element still sums member 0's + member 1's partial, so the bits match)
+    cudaStream_t ar_st = nullptr;
+    cudaEvent_t ar_ready[8] = {}, ar_done[8] = {};   // (a slab's GEMM end, its AR end; 8 slabs cover 16K rows at 2K)
     // in place (file_experts): each streamed expert's file region read into pinned staging (ring_n slots of
     // stage_stride bytes, a part's slots free again once its `filled` copies are done) by the readers, in parallel,
     // and DMA'd from there - a copy from the files' pages goes through the driver's staging, one thread at ~1.3 GB/s
@@ -4588,6 +4592,11 @@ struct Model::Impl {
             for (int i = 0; i < Chunk::kParts; ++i) {
                 CK(cudaEventCreateWithFlags(&c.filled[i], cudaEventDisableTiming));
                 CK(cudaEventCreateWithFlags(&c.freed[i], cudaEventDisableTiming));
+            }
+            CK(cudaStreamCreateWithFlags(&c.ar_st, cudaStreamNonBlocking));
+            for (int i = 0; i < 8; ++i) {
+                CK(cudaEventCreateWithFlags(&c.ar_ready[i], cudaEventDisableTiming));
+                CK(cudaEventCreateWithFlags(&c.ar_done[i], cudaEventDisableTiming));
             }
             if (cublasCreate(&c.blas) != CUBLAS_STATUS_SUCCESS || cublasSetStream(c.blas, d.st) != CUBLAS_STATUS_SUCCESS) {
                 err = "cuBLAS on CUDA" + std::to_string(d.id);
@@ -12023,6 +12032,16 @@ struct Model::Impl {
     }
 
 
+    // DS4_AR_SLAB=1: the attention-output all-reduce in 2048-row slabs on ar_st, overlapped with the next
+    // slab's attention.  Only the peer transport: the host one's put/sum expect the layer's stream.
+    static bool ar_slab_on() {
+        static const bool on = [] {
+            const char* v = std::getenv("DS4_AR_SLAB");
+            return v != nullptr && std::atoi(v) != 0;   // opt-in until measured
+        }();
+        return on;
+    }
+
     // A chunk's all-reduce: the peer transport where it was set up, the host transport otherwise.
     void chunk_allreduce(Dev& d, Chunk& c, const ArGroup& ab, int mi, int n, float* buf, cudaStream_t s) {
 #if !defined(STRATA_USE_HIP)
@@ -12261,6 +12280,8 @@ struct Model::Impl {
         prof_mark(d, 7);
         // the attention in slabs: q, the sparse attention, wo_a, wo_b (this member's share) into acc
         if (NHL == 0) CK(cudaMemsetAsync(c.acc, 0, (size_t) T * D * sizeof(*c.acc), s));   // (no heads)
+        const int ar_slabs = (int) ((T + c.A - 1) / c.A);
+        const bool ar_slab = nm > 1 && ar_slab_on() && groups[(size_t) d.grp].peer_arb_on && ar_slabs > 1 && ar_slabs <= 8;
         for (int a0 = 0; a0 < T && NHL > 0; a0 += c.A) {
             const int na = std::min(c.A, T - a0);
             if (!gemm(d, c, l.wq_b, c.qr16 + (size_t) a0 * g.q_lora, g.q_lora, na, c.q, HQ, 0.0f, err)) return false;
@@ -12304,9 +12325,22 @@ struct Model::Impl {
                     return false;
             x3::rows_f16(c.oa, OG * g.o_lora, nullptr, na, OG * g.o_lora, c.oa16, s);
             if (!gemm(d, c, l.wo_b, c.oa16, OG * g.o_lora, na, c.acc + (size_t) a0 * D, D, 0.0f, err)) return false;
+            if (ar_slab) {   // (slab k's AR on ar_st, while slab k+1's attention runs on s - the regions are disjoint)
+                const int k = a0 / c.A;
+                CK(cudaEventRecord(c.ar_ready[k], s));
+                CK(cudaStreamWaitEvent(c.ar_st, c.ar_ready[k], 0));
+                chunk_allreduce(d, c, ab, mi, na * D, c.acc + (size_t) a0 * D, c.ar_st);
+                CK(cudaEventRecord(c.ar_done[k], c.ar_st));
+            }
             if (a0 == 0 && na == T) dump_sub(d, "ao", l.il, p0, T, c.acc, (size_t) T * D * 4);
         }
-        if (nm > 1) chunk_allreduce(d, c, ab, mi, T * D, c.acc, s);
+        if (nm > 1) {
+            if (ar_slab) {
+                const int ns = (int) ((T + c.A - 1) / c.A);
+                for (int k = 0; k < ns; ++k) CK(cudaStreamWaitEvent(s, c.ar_done[k], 0));
+            } else
+                chunk_allreduce(d, c, ab, mi, T * D, c.acc, s);
+        }
         dump_sub(d, "h_in", l.il, p0, T, c.h, (size_t) T * H * D * 4);
         hc_post_inplace(c.acc, c.h, c.a_post, c.a_comb, D, H, T, s);
         if (dump_l != nullptr && mi == 0) dump_layer(d, c.h, 1000 + l.il, p0, T);   // (after the attention, as the window path)

@@ -3467,11 +3467,22 @@ void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned
 }
 
 #if !defined(STRATA_USE_HIP)
+// DS4_PEER_AR_BLOCKS (default kPeerArBlocks): fewer blocks leave more SMs to a kernel the all-reduce
+// overlaps with (the slab-wise attention AR), at the cost of transfer parallelism.
+static int peer_ar_blocks() {
+    static const int n = [] {
+        const char* v = std::getenv("DS4_PEER_AR_BLOCKS");
+        const int b = v != nullptr ? std::atoi(v) : kPeerArBlocks;
+        return std::max(1, std::min(kPeerArBlocks, b));
+    }();
+    return n;
+}
+
 bool allreduce_peer(float* x, int n, const PeerAr& a, int mi, unsigned seq, cudaStream_t s) {
     if (!x || (reinterpret_cast<uintptr_t>(x) & 15u) || n <= 0 || n % 4 || mi < 0 || mi > 1 || !a.recv || !a.peer_recv ||
         (reinterpret_cast<uintptr_t>(a.recv) & 15u) || (reinterpret_cast<uintptr_t>(a.peer_recv) & 15u) || !a.flags ||
         !a.peer_flags || !a.error || !a.timeout_ticks || a.stride < size_t(n) || a.stride % 4) return false;
-    const int blocks = std::max(1, std::min(kPeerArBlocks, cdiv(n / 4, kThreads)));
+    const int blocks = std::max(1, std::min(peer_ar_blocks(), cdiv(n / 4, kThreads)));
     if (a.f16) ar_peer_kernel<true><<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
     else ar_peer_kernel<false><<<blocks, kThreads, 0, s>>>(x, n / 4, a, mi, seq);
     return cudaPeekAtLastError() == cudaSuccess;
