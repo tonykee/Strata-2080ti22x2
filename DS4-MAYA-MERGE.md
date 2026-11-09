@@ -1233,3 +1233,17 @@ without the split: 35.0 / 30.5 / 24.6 / 25.9 / 23.1 / 24.9
 The code-heavy turns moved from 23-26 to 27.4-29.5 and the median crossed 30; the 13K decode is 40.45 and the
 fixed MoE warm-up decode 53.9.  The split is in the hybrid/fastdec performance configs; the v2 quality config
 keeps the exact path (the split's last-place rounding).
+
+## Second 6-turn sample with the split (2026-11-10)
+
+Same server (fastdec + batched rollback + split), the same conversation prompts, a new answer content:
+
+```text
+38.8 / 36.0 / 26.1 / 26.9 / 30.2 / 33.1 tok/s   median 31.65
+first sample: 35.3 / 32.0 / 28.3 / 27.4 / 29.5 / 33.0   median 30.75
+```
+
+Two samples together: mean 31.4, median ~31.2, 8 of 12 turns at or above 30; the two code-heavy turns
+(a 5-line Python example, an async version) are 26.1-29.5.  CPU lane 1.0-1.6%, prefill of the cached turns
+46-73 tok/s.  So the *typical* 6-turn decode is 30-40; the code turns need another ~2-4 tok/s, which is the
+per-round head/draft/host time, not the attention any more.
