@@ -60,3 +60,14 @@ if ! kill -0 "$PID" 2>/dev/null; then
 fi
 echo "started PID $PID on port $PORT; log: $LOG"
 echo "engine load can take ~2-3 minutes; check: tail -f $LOG"
+
+# STRATA_WARMUP=1: wait for /health, then the two warm-up rounds the docs measure (placement only, no output
+# change).  Off by default so the start returns at once; a benchmark or a production start wants it on.
+if [ "${STRATA_WARMUP:-0}" != "0" ]; then
+    echo "waiting for /health, then warming up (rounds ${STRATA_WARMUP_ROUNDS:-2})..."
+    for _ in $(seq 1 120); do
+        if curl -sf -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then break; fi
+        sleep 5
+    done
+    timeout 600 "$PY" tools/warmup_ds4.py --url "http://127.0.0.1:$PORT" --rounds "${STRATA_WARMUP_ROUNDS:-2}" || true
+fi

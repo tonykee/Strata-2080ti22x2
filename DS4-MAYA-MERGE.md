@@ -893,5 +893,8 @@ only, no output change.  Run it after `/health`:
 ./.venv/bin/python tools/warmup_ds4.py --rounds 2
 ```
 
+`STRATA_WARMUP=1 ./start_cpu_lane.sh` does the same after `/health` (rounds from `STRATA_WARMUP_ROUNDS`, 2 by
+default); the default stays off so a start returns at once.
+
 Without it the first real request pays the expert-cache fill: in this state the first short decode measured
 5.9 tok/s and the first 1.6K read 117 tok/s, then 28.0 and 545 tok/s after the two rounds.
