@@ -307,6 +307,7 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
            int& accepted, std::string& err, float cum_min = -1.0f, Lookup* lk = nullptr) {
     out.clear();
     offered = accepted = 0;
+    const double t_round0 = rt_now();
     if (spec && room > 1 && m.draft_block() > 0) {
         std::vector<int> drafts;
         std::vector<float> conf;
@@ -328,25 +329,32 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
         while (keep < (int) drafts.size() && keep < room - 1 && keep < g_spec_depth && conf[(size_t) keep] >= conf_min &&
                (cum *= conf[(size_t) keep]) >= cum_min)
             ++keep;
-        int lk_match = 0;
+        int lk_match = 0, lk_k = 0;
         bool from_lk = false;
         if (lk != nullptr && room > 1) {
             lk->policy.set_context(m.pos());
             // (at most 8 drafts: the head walks 8 rows in one pass; a lookup 15 rows long costs far more than
             // its extra tokens, measured on a code prompt: 31.3 tok/s without the lookup, 18.6 with it)
-            const int k = lk->sfx.propose(std::min(room - 1, std::min(8, m.verify_max() - 1)), lk->buf.data());
-            // only where the lookup starts with DSpark's first draft (Maya's gate): a lookup that disagrees there
-            // is a different continuation, and verifying its long window costs more than the drafter's short one
-            if (k > 0 && !drafts.empty() && lk->buf[0] == drafts[0]) {
+            lk_k = lk->sfx.propose(std::min(room - 1, std::min(8, m.verify_max() - 1)), lk->buf.data());
+            if (lk_k > 0) {
                 lk_match = lk->sfx.last_match();
-                const strata::spec::DraftPolicy::Pick pk = lk->policy.choose(keep + 1, k, lk_match);
-                // only a lookup window longer than the drafter's cut is worth its verify rows (a shorter one
-                // replaces a longer DSpark window and costs speed, measured on a code prompt: 31.3 -> 23.8 tok/s)
-                if (pk.lookup && pk.t - 1 > keep) {
-                    const int nk = std::min(pk.t - 1, k);
-                    drafts.assign(lk->buf.begin(), lk->buf.begin() + nk);
-                    keep = nk;
-                    from_lk = true;
+                // Cold start: before a lookup has proven itself, only a very long match (>= 24 tokens) probes it
+                // beside DSpark; otherwise it must have kept at least half of its drafts so far.  (The policy's own
+                // priors chose 8-15-row windows for a JSON list and cost 31.3 -> 20-27 tok/s.)
+                const bool lk_ready = (lk->windows > 0 && lk->accepted * 2 >= lk->offered) ||
+                                      (lk->windows == 0 && lk_match >= 24);
+                // only where the lookup starts with DSpark's first draft (Maya's gate): a lookup that disagrees there
+                // is a different continuation, and verifying its long window costs more than the drafter's short one
+                if (lk_ready && !drafts.empty() && lk->buf[0] == drafts[0]) {
+                    const strata::spec::DraftPolicy::Pick pk = lk->policy.choose(keep + 1, lk_k, lk_match);
+                    // only a lookup window longer than the drafter's cut is worth its verify rows (a shorter one
+                    // replaces a longer DSpark window and costs speed, measured on a code prompt: 31.3 -> 23.8 tok/s)
+                    if (pk.lookup && pk.t - 1 > keep) {
+                        const int nk = std::min(pk.t - 1, lk_k);
+                        drafts.assign(lk->buf.begin(), lk->buf.begin() + nk);
+                        keep = nk;
+                        from_lk = true;
+                    }
                 }
             }
         }
@@ -378,6 +386,31 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
                 lk->sfx.append(add.data(), add.size());
             }
             return true;
+        }
+        // no DSpark draft passed the floor: the lookup alone may still carry this round (a small bootstrap window
+        // until it has earned a wider one; a failed probe costs the rows it verified, not a good MTP window)
+        if (lk_k > 0 && room > 1) {
+            const strata::spec::DraftPolicy::Pick pk = lk->policy.choose(1, std::min(lk_k, 4), lk_match);
+            if (pk.lookup && pk.t > 1) {
+                std::vector<int> ld(lk->buf.begin(), lk->buf.begin() + std::min(pk.t - 1, lk_k));
+                int acc = 0, next = -1;
+                const double rt1 = rt_now();
+                if (!m.verify(tok, ld, temperature, top_p, top_k, min_p, seed, counter, acc, next, err)) return false;
+                g_rt.verify += rt_now() - rt1;
+                ++g_rt.spec_rounds;
+                counter += (unsigned long long) acc + 1;
+                for (int i = 0; i < acc; ++i) out.push_back(ld[(size_t) i]);
+                out.push_back(next);
+                offered = (int) ld.size();
+                accepted = acc;
+                lk->policy.observe(true, offered + 1, acc, lk_match, rt_now() - t_round0);
+                lk->windows += 1;
+                lk->offered += offered;
+                lk->accepted += acc;
+                std::vector<int32_t> add(out.begin(), out.end());
+                lk->sfx.append(add.data(), add.size());
+                return true;
+            }
         }
     }
     const double rt2 = rt_now();
@@ -2560,9 +2593,9 @@ int main(int argc, char** argv) {
     strata::ds4::Options o;
     std::string ids_s, dump, eos = "1";
     int n = 0, window = 0;   // (0: the model's feed unit - a whole prompt on the chunked path; 16 for the scoring runs)
-    int suffix_draft = 0;    // --suffix-draft N: the prompt lookup's shortest match (0: off; N: on, Maya's 3)
-                             // (off by default: it helps long repeats - a multi-turn answer at 47.4 tok/s - and
-                             //  costs on ordinary code: 31.3 -> 26.9/18.6 tok/s in the 832-token JSON test)
+    int suffix_draft = 3;    // --suffix-draft N: the prompt lookup's shortest match (0: off), Maya's 3
+                             // (the cold-start gate in round(): a probe only on a match >= 24 tokens, then it must
+                             //  have kept half its drafts; the 832-token JSON list then runs no lookup at all)
     bool spec = true;
     float temp = 0.0f;   // the CLI's sampling (0: greedy)
     unsigned long long cli_seed = 1;

@@ -519,3 +519,23 @@ On long repeats it still pays: a 4-turn conversation's last answer verified 50/5
 So `--suffix-draft` defaults to **0 (off)**; `--suffix-draft 3` turns it on for code/quoted/list content, and
 the next step is to make the cold start safe (lookup only when the MTP cut is 0, or a conservative prior until
 the first acceptance) so it can be on by default.
+
+## Prompt lookup: cold-start gate, default back on (2026-11-09)
+
+The regression was the policy's cold start: its optimistic priors chose 8-15-row lookup windows before it had
+seen one accepted draft.  The gate now:
+
+- before the first success, only a **match of 24 tokens or longer** probes a lookup window beside DSpark;
+- after a lookup round, it must have kept **at least half** of its drafts to keep using windows;
+- a lookup only runs where it starts with DSpark's first draft and is **longer** than the MTP cut, capped at 8;
+- when no DSpark draft passes the floor, the lookup may carry the round alone (a bootstrap window of at most
+  4 drafts), so a failed probe costs only its own rows.
+
+Measured, same host state, 832-token JSON list (96 greedy tokens): `--suffix-draft 0` 29.7 tok/s;
+`--suffix-draft 3` 27.5 tok/s with **no lookup rounds** (the match is under 24 and nothing was proven) - the
+2 tok/s is the host's drift, the rounds/drafts are the same.  The 5347-token natural prompt with the gate:
+**13 rounds, 50/50 drafts, 4.92 tokens/round, one lookup round 8/8 kept, 29.9 tok/s**.  The earlier ungated
+JSON run was 20.4-26.9 against 31.3 without lookup; that is gone.
+
+`--suffix-draft` is back to **3** (Maya's default) now that the cold start is gated.  The multi-turn repetitive
+answer still reached 50/50 drafts and 47.4 tok/s.
