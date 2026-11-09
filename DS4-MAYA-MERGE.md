@@ -944,3 +944,17 @@ warm-up 1.3K:  116.6/117.8 tok/s      without
 
 Placement/order of the copied experts is unchanged, so the outputs are the same; the copy of an expert no row
 of the chunk picked is simply not issued.  Written into the hybrid and v2 tuned configs.
+
+## Cross-layer copy overlap: kParts 8 + ring 800 MB measured, no gain (2026-11-09)
+
+The prompt path's four ring parts hold one layer's batches; the next layer's copies wait for them.  Eight parts
+with an 800 MB ring should let the next layer's copies run during the current layer's attention.  Same degraded
+state (warm-up 10.7K 540 against 543), hybrid bench:
+
+```text
+kParts 8 + ring 800: 1,613 3.89 s = 415.2; 6,564 10.07 s = 652.1; 13,161 20.44 s = 643.9
+kParts 4 + ring 400: 1,615 4.08 s = 396.1; 6,564 10.06 s = 652.6; 13,160 20.39 s = 645.5
+```
+
+No change on the long chunks (the 1.6K difference is the skip path's noise), so the ring depth and part count
+are not the remaining 13K cost; reverted to 4/400.
