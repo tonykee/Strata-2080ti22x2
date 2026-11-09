@@ -481,3 +481,21 @@ side; restarting the engine is what loses it.
 `stop_cpu_lane.sh` now keeps the pool by default (use `--release` when another model needs the RAM).
 A script that guarantees 710 per one-shot run would have to reboot first; `reboot` is not in the
 NOPASSWD set here.
+
+## Prompt lookup (Maya's --suffix-draft) wired in (2026-11-09)
+
+Strata's `src/spec` library (suffix drafter + draft policy) existed but `ds4_main.cpp` never used it: Maya's
+`Lookup` (the tokens after an earlier repeat of the context) was missing from both the CLI and the server.
+Ported the glue:
+
+- `--suffix-draft N` (default 3, `0` off), one `Lookup` per run, reset from `m.tokens()` at each request;
+  the policy learns window costs and lookup acceptance as it decodes.
+- A CLI natural 5347-token prompt, same host state: **15 rounds, 53 offered, 48 accepted, 4.27 tokens/round,
+  27.2 tok/s** without the lookup; **12 rounds, 58 offered, 51 accepted, 5.33 tokens/round, 29.1 tok/s** with
+  it (7 lookup rounds, 42 of 49 lookup drafts kept).
+- Server multi-turn, round 4 (repetitive answer): **50/50 drafts, per-position up to 8 rows (past DSpark's
+  block of 5), 47.4 tok/s**.  Every lookup draft is verified like a DSpark draft, so the output is unchanged.
+
+The comparison that started this: on the same 26-token prompt and host state, Maya measured 18.34 tok/s with
+103 drafts/85 kept; Strata (before the lookup) measured 17.60 with 128 drafts/86 kept.  The apparent Maya lead
+was host state and prompt content, not the drafter.  The lookup is a real missing feature and is now in.
