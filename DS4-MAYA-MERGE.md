@@ -1004,3 +1004,26 @@ the only addition), so the all-reduce share is not a porting gap.
 The remaining 20% on the 13K is therefore in the expert stage and/or the flow's overlap, not in a missing
 kernel we can copy.  Locating it needs a low-overhead nsys of Maya's **server** engine on a clean boot (wrap
 its engine in nsys and drive it through the normal warm-up + bench), not another profiled CLI run.
+
+## Maya fast path under nsys, and the Strata flow re-test (2026-11-09)
+
+The server's own engine was wrapped in nsys (the config's `exe`) and driven through the normal warm-up: the
+capture with two 10.7K reads (fast path, 925-966 tok/s) has
+
+```text
+Maya fast path                     Strata chunk path (3.5K, same boot)
+sparse_attn_packed<int 8>  20.8%   ar_peer_kernel            28.2% (2.91 s, 160 calls, 18 ms avg)
+ar_sum_kernel              12.2%   sparse_attn_v7            19.7%
+ar_peer_kernel              3.5%   cuBLAS GEMMs              ~19.6%
+mx_wait_kernel             11.4%   gemv_f32_rows              4.7%
+cuBLAS                     ~10%
+```
+
+Per 10.7K tokens the all-reduce is ~6.15 s on Maya ((9.53+2.77)/2) and ~8.9 s on Strata (2.91 s at 3.5K
+scaled), a 2.75 s difference that matches the wall gap (11.06 s against 13.31 s).  Maya pipelines the AR with
+the 8-token packed attention windows; Strata's chunk path does one large all-reduce a layer, a barrier.
+
+Re-testing the existing flow path (`DS4_FLOW_TP=1`) on the same boot: 13,164 tokens in 17.70 s = 743.9 tok/s
+(warm-up 729.9 against 802 for the chunk path), 6.6K 723.1, decode 17.6 - the flow does not realize the gain;
+it stays off.  The structural next step is a slab-wise all-reduce in the chunk path (the attention already runs
+in 2048-row slabs), not another setting.
