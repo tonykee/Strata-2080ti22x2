@@ -418,3 +418,33 @@ DS4_STORE_GB=0 DS4_COPY_HUGETLB=1 DS4_COPY_PIN=1 DS4_ATTN_V7=1 \
   --experts 4 --prefill-chunk 8192 --dspark on --ids "$IDS" --n 1
 sudo -n /usr/local/sbin/strata-ds4-hugepages-release
 ```
+
+## After the user's reboot (250 W), 2026-11-09 09:10
+
+The first run after the reboot (huge-page pool reserved once, no previous load):
+
+```text
+13K prefill: 18.37 s = 710.8 tok/s, FAT 64 + peer AR + V7
+decode (16 tokens, 13K prompt): 29.7 tok/s; CPU lane 447 of 2670 picks
+  layers 13.26 ms/token, head wait 16.89, Engram 2.93
+```
+
+That is the best measured prefill so far: **710.8 tok/s**, against 551 before FAT and 540.6 for
+Maya's own tuned server on this host.  The load copied 90.4 GB in 58 s.
+
+Every later load, even with the huge-page pool **kept reserved** and reused (two runs back to back,
+`HugePages_Free=49152` between them), measured 551-561 tok/s and a 69 s copy: the pool's pages after
+the first release are slower than the ones the boot reserved.  A fresh boot restores 710; merely
+keeping the pool does not.  The lesson: after a reboot reserve the pool once and do not release it
+between DeepSeek runs (release it only when another model needs the RAM).
+
+Ported Maya's page-cache drop (`STRATA_DS4_LOAD_DROP_CACHE`, on): after an expert is copied into
+RAM, its source pages are evicted (`posix_fadvise DONTNEED`, 90.0 GB here) instead of holding the
+same bytes twice.  It removes the load's own cache pressure; it does not change the huge-page
+placement above.
+
+`DS4_ATTN_V7_DECODE=1` (opt-in): V7 for a verify window too.  19.0 against 17.7 tok/s in the same
+state, and the approximate V7 arithmetic, so off by default.
+
+Decode remains the open gap: 29.7 tok/s on the 13K prompt and 13-17 on short natural prompts,
+against Maya's 31.2 on its bench and 25.8 after a warmup.  40+ is not reached.

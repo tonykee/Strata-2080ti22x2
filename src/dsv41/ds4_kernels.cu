@@ -2961,6 +2961,13 @@ __global__ void __launch_bounds__(kV7Threads, 1) sparse_attn_v7_kernel(const flo
 #endif
 }
 // sm_75 V7 attention availability: the 64 KiB shared layout above; off unless asked while it is measured.
+static bool attn_v7_decode() {
+    static const bool on = [] {
+        const char* e = std::getenv("DS4_ATTN_V7_DECODE");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    return on;
+}
 static bool attn_v7_now() {
     static const bool off = [] {
         const char* e = std::getenv("DS4_ATTN_V7");
@@ -3001,7 +3008,7 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
         return;
     }
 #if !defined(STRATA_USE_HIP)
-    if (a.gen && a.kcap + a.win <= kV7Max && heads % 16 == 0 && attn_v7_now()) {
+    if ((a.gen || attn_v7_decode()) && a.kcap + a.win <= kV7Max && heads % 16 == 0 && attn_v7_now()) {
         strata_ds4_launch(sparse_attn_v7_kernel, dim3(heads / 16, T), kV7Threads, kV7Smem, s, q, win,
                           (const uint8_t*) ckv, sel, sel_stride, a, sink, heads, scale, out);
         return;
