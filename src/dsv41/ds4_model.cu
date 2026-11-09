@@ -756,7 +756,9 @@ struct Chunk {
     uint16_t* emb_host[2] = {nullptr, nullptr};
     uint8_t* eg_host[2] = {nullptr, nullptr};
     cudaEvent_t emb_ev[2] = {nullptr, nullptr}, eg_ev[2] = {nullptr, nullptr};
-    double stream_bytes = 0;     // the experts streamed in, in all
+    double stream_bytes = 0;
+    double stream_gu = 0, stream_down = 0;   // (DS4_PROF: the member's gate/up and down bytes actually DMA'd)
+    long long stream_experts = 0;     // the experts streamed in, in all
     // the flow (a GGUF's in-place experts, every layer of the device on it alone; DS4_FLOW=0: the batches above): a
     // (chunk, layer)'s streamed experts are those it routes to - its likely ones (the profile's chance of a pick by the
     // chunk's tokens) queued once the layer before it routed, read while that one computes, the rest of its picks once
@@ -4994,7 +4996,12 @@ struct Model::Impl {
                 const uint8_t* src = direct_src(e);
                 if (src == nullptr && sb != nullptr) src = sb + (size_t) i * c.stage_stride;
                 if (!stream_expert(l0, mi, e, dst, c.cs, err, src)) return false;
-                c.stream_bytes += (double) unit(member(l0, mi));
+                const double ub = (double) unit(member(l0, mi));
+                const double dn = (double) g.dim * (double) gg::type_row_bytes(gg::expert_type(l0.lay, 2), member(l0, mi).ffn);
+                c.stream_bytes += ub;
+                c.stream_down += dn;
+                c.stream_gu += ub - dn;
+                ++c.stream_experts;
             }
             c.dbg_dma_ms += now_ms() - t_dma;
             CK(cudaEventRecord(c.filled[half], c.cs));
@@ -13676,6 +13683,12 @@ struct Model::Impl {
                          "ds4 prompt GPU time, %d tokens: attention %.0f ms, routing + shared expert %.0f ms, experts %.0f ms "
                          "(with the waits for streamed ones), between layers %.0f ms\n",
                          n, cprof_ms[1], cprof_ms[2], cprof_ms[3], cprof_ms[0]);
+            for (size_t di = 0; di < devs.size() && di < chunks.size(); ++di)
+                if (chunks[di] != nullptr)
+                    std::fprintf(stderr, "ds4 prefill streams CUDA%d: %lld experts, gate/up %.2f GB, down %.2f GB (%.2f MB down each)\n",
+                                 devs[di].id, chunks[di]->stream_experts, chunks[di]->stream_gu / 1e9,
+                                 chunks[di]->stream_down / 1e9,
+                                 chunks[di]->stream_down / 1e6 / (double) std::max<long long>(1, chunks[di]->stream_experts));
             {   // the finer table (ms, % of the sum)
                 static const char* nm_[16] = {"between layers", "attn rest (q_b, wo_a/b, hc_post)", "shared expert", "experts (incl waits)",
                                               "engram", "attn mHC (mix/split/norm)", "attn projections", "compressor + indexer",

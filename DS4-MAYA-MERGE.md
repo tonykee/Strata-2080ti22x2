@@ -693,3 +693,26 @@ than v2, at v1's lower down precision.
 
 Copy microbenchmark (pinned H2D, 5120 rows): the down's 2D copy (width 200, pitch 450) 8.76 GB/s, a 1D 1 MB
 copy 11.8 GB/s - only 26% apart, not the prompt's limit; the aggregate copy waits are the scheduling limit.
+
+## The member's down is already sliced: no DOWN_PART port needed (2026-11-09)
+
+`DS4_PROF` now prints what each device actually DMAs.  Hybrid pack, 13K prompt, two 8192 chunks:
+
+```text
+CUDA0: 25,204 experts, gate/up 55.50 GB, down 27.75 GB (1.10 MB down each)
+CUDA1: 25,204 experts, gate/up 60.64 GB, down 30.32 GB (1.20 MB down each)
+```
+
+The full IQ1_S down row is 2304/256*50 = 450 B; a full 5120-row down is 2.304 MB.  The member's 1.10-1.20 MB
+is 44-56% of that: `stream_expert`'s 2D copy uses width `dh = type_row_bytes(t2, x.ffn)` and source pitch
+`dr = type_row_bytes(t2, g.ff)`, so it already transfers only the member's columns.  Maya's
+`DS4_FLOW_DOWN_PART` compacts the **flow** path's staging because that path DMA'd whole down rows; the CPU-lane
+copy path never had those bytes to save.
+
+`DS4_FLOW_DOWN_SHARE` is the other half: two members reading the same entire down range from the files.  Our
+`--mmap-experts off` copies each expert's file range once at load (87.1 GB) and both members stream their
+halves from that one RAM copy, so there is no second file read to share either.  The flow path is off in the
+fast state (695.8 against 731.7 tok/s), so neither flag applies.
+
+The 13K stream is 174 GB over two chunks: 116 GB gate/up and 58 GB down.  The down slice is already minimal;
+the next lever is the gate/up bytes (a lower-bit pack) or more VRAM experts, not DOWN_PART.
