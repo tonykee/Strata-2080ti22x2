@@ -598,3 +598,17 @@ DS4_FLOW_TP=1: 21.16 s (617.1 tok/s), experts 16.26 s, ffn mHC+router+sort 2.88 
 The flow trades a larger expert stage for a much smaller host-side ffn/between stall; the first token is 455 in
 both.  It is **not** enabled by default: in the clean fast state no-flow's ffn is already 2.8 s, so the flow's
 +4 s expert stage would likely dominate.  Needs a fast-state A/B after a reboot; `DS4_FLOW_TP=1` is the switch.
+
+## DS4_AR2_DECODE: decode all-reduces in one launch (2026-11-09)
+
+Ported Maya's `DS4_AR2_DECODE=1`: the decode windows' all-reduces (G.ar, a group of two) run in ar2_kernel's
+exact mode (1: member 0's partial plus member 1's, ar_sum_kernel's bits) instead of xfer_put + ar_sum_kernel.
+Its own progress words; the chunk path (G.arb) keeps whatever `DS4_AR2` chose.  13K prompt, 16 tokens, same
+slow host state:
+
+```text
+off: decode 17.62 tok/s, layers 21.50 ms/token
+on:  decode 18.18 tok/s, layers 20.23 ms/token   (first token 455 in both; exact sums)
+```
+
+`DS4_AR2_DECODE=1` is now in both tuned configs.  It is exact, so no output check beyond the token match is needed.

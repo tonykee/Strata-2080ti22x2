@@ -3660,6 +3660,13 @@ struct Model::Impl {
                 if (!hmap(G.arb.pflags, (size_t) G.arb.nm * G.arb.slots * kAr2Blocks * 16, err)) return false;
                 G.arb.ar2 = ar2();
             }
+            // DS4_AR2_DECODE: the decode windows' all-reduces (G.ar) in ar2_kernel's exact mode; its own progress
+            // words (G.arb was copied from G.ar above and shares none of them)
+            if (G.ar.nm == 2 && ar2_decode()) {
+                if (!hmap(G.ar.pflags, (size_t) G.ar.nm * G.ar.slots * kAr2Blocks * 16, err)) return false;
+                G.ar.ar2 = 1;
+                std::fprintf(stderr, "ds4: DS4_AR2_DECODE: the decode windows' all-reduces in one launch, the sums bit for bit\n");
+            }
         }
         if (g.n_mtp > 0) {
             if (!halloc(h_taps, (size_t) tap_cap * g.d_targets.size() * g.dim, err)) return false;
@@ -4605,6 +4612,15 @@ struct Model::Impl {
             return (x >= 0 && x <= 2 && std::strspn(e, "0123456789") == std::strlen(e)) ? x : -1;
         }();
         return v;
+    }
+    // DS4_AR2_DECODE=1: the decode windows' all-reduces of a group of two (G.ar) in ar2_kernel too - its exact mode
+    // (1: member 0's partial plus member 1's, ar_sum_kernel's bits), one launch where xfer_put and ar_sum_kernel were two
+    static bool ar2_decode() {
+        static const bool on = [] {
+            const char* e = std::getenv("DS4_AR2_DECODE");
+            return e != nullptr && std::atoi(e) != 0;
+        }();
+        return on;
     }
     // ---- the busy experts (run_set): an expert of many rows as FP16 GEMMs.  The tiles decode its weights again for
     // every 64 of its rows (a prompt's chunk gives a popular expert hundreds); decoded once, to the FP16 values the tiles

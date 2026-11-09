@@ -49,6 +49,7 @@
     "DS4_CACHE_SUB_N": "12",
     "DS4_CACHE_SUB_RISK_BUDGET": "0.6",
     "DS4_CACHE_SUB_NORM": "reference",
-    "DS4_ATTN_SLAB": "2048"
+    "DS4_ATTN_SLAB": "2048",
+    "DS4_AR2_DECODE": "1"
   }
 }
