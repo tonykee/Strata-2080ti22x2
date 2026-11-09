@@ -539,3 +539,7 @@ JSON run was 20.4-26.9 against 31.3 without lookup; that is gone.
 
 `--suffix-draft` is back to **3** (Maya's default) now that the cold start is gated.  The multi-turn repetitive
 answer still reached 50/50 drafts and 47.4 tok/s.
+
+Gated and default on, the same 4-turn conversation through the server: **24.0 / 25.7 / 38.9 / 44.1 tok/s**,
+the fourth answer verifying 50 of 57 drafts with positions 1..7 kept (the lookup's rows beyond DSpark's 5).
+So the cold-start gate keeps the long-repeat win while the JSON list runs no lookup.
