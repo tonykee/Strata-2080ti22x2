@@ -30,9 +30,14 @@
   "log": "/home/likan/strata-latest/strata-ds4-v2-engine.log",
   "host": "127.0.0.1",
   "port": 8000,
-  "gpu": [0, 1],
+  "gpu": [
+    0,
+    1
+  ],
   "gpus_asked": true,
-  "lib_dirs": ["/usr/local/cuda-12.8/lib64"],
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/lib64"
+  ],
   "env": {
     "DS4_ENGRAM_CACHE_MB": "2048",
     "DS4_SETTLE_MS": "2000",
@@ -43,6 +48,7 @@
     "DS4_STORE_GB": "0",
     "DS4_CACHE_SUB_N": "12",
     "DS4_CACHE_SUB_RISK_BUDGET": "0.6",
-    "DS4_CACHE_SUB_NORM": "reference"
+    "DS4_CACHE_SUB_NORM": "reference",
+    "DS4_ATTN_SLAB": "2048"
   }
 }

@@ -543,3 +543,21 @@ answer still reached 50/50 drafts and 47.4 tok/s.
 Gated and default on, the same 4-turn conversation through the server: **24.0 / 25.7 / 38.9 / 44.1 tok/s**,
 the fourth answer verifying 50 of 57 drafts with positions 1..7 kept (the lookup's rows beyond DSpark's 5).
 So the cold-start gate keeps the long-repeat win while the JSON list runs no lookup.
+
+## Attention slab 2048: q_b 5.10 -> 3.49 s on the 13K prompt (2026-11-09)
+
+The chunked prompt's q_b + rope stage was decoding wq_b's EXL3 rows to FP16 once per attention slab; the
+automatic slab is 8 MB (512 rows here, CUDA0 has only ~228 MiB spare), so the same weight was reconstructed
+about 26 times a chunk.  Measured on the same 13K prompt, one host state per pair:
+
+```text
+default (slab 8 MB, W16 16 MB): q_b + rope 5.10 s
+DS4_ATTN_SLAB=1024:             q_b + rope 3.76 s
+DS4_ATTN_SLAB=2048:             q_b + rope 3.49 s   (23 fewer experts a card, 12.73 vs 12.81 GB)
+DS4_W16_MB=64 alone:            q_b + rope 4.93 s   (no gain: the slab, not the scratch)
+```
+
+`DS4_ATTN_SLAB=2048` is now in both `tools/strata-ds4-v2-2080ti*.json`.  At the same host state the default
+run was 662 tok/s and the slab-1024 run 719 tok/s; the slab change is worth roughly 0.5-0.8 s of the 13K
+prompt, the rest of that pair's difference was the host.  Maya's own q stage (826 ms) still shows a ~4x gap in
+this stage that the slab does not close.
