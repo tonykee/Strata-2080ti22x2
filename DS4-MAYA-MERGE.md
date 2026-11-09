@@ -834,3 +834,7 @@ So the gap is real code/configuration, not host state.  Checked:
 
 The remaining 4.3 s is in the GPU stream's per-layer work (attention ~7.5 s a device, expert copy waits,
 2.2 s of all-reduces); the profiler's per-stage sum is not a trustworthy attribution there.
+
+Peer AR in FP16 (`DS4_PEER_AR_F16=1`), hybrid 13K, same slow state: prefill 746.9 tok/s (17.48 s) against
+736.6 (17.73 s) for the F32 peer AR, host sync 14.07 against 14.33 s - about 1.4%, and the wire is
+approximate (both partials rounded to FP16).  It stays opt-in; the default remains F32.
