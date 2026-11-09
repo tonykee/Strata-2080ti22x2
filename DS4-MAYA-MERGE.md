@@ -1209,3 +1209,27 @@ The 6-turn with the fastdec config plus it (warm-up 796): 35.0 / 30.5 / 24.6 / 2
 first two turns above 30, the code-heavy ones still 23-26 (their draft acceptance is ~2.3 tokens a round against
 4.3 for the MoE/repetitive answers).  Enabled in the hybrid, fastdec and v2 tuned configs; the code default
 stays off.
+
+## Decode attention split-KV: +9% at 13K, the 6-turn median 30.4 (2026-11-10)
+
+The decode's attention was the largest per-round stage (25.75 ms).  A/B on the stable 13K content (prompt
+17.77/17.79/20.05 s - the split run caught a worse host state):
+
+```text
+few-query path (default): 37.11 tok/s
+DS4_ATTN_V7_DECODE=1:     39.62 tok/s  (tokens differ from token 15: v7's WMMA order)
+DS4_ATTN_SPLIT=1:         40.45 tok/s  (tokens identical; +9%)
+```
+
+The split-KV (`sparse_attn_split<4,40>`, `DS4_ATTN_SPLIT=1`) merges the KV chunks in another order (last-place
+bits), but the 13K's greedy tokens matched.  With the fastdec config and the batched rollback, the 6-turn
+(warm-up 792.6):
+
+```text
+35.3 / 32.0 / 28.3 / 27.4 / 29.5 / 33.0 tok/s   median ~30.4
+without the split: 35.0 / 30.5 / 24.6 / 25.9 / 23.1 / 24.9
+```
+
+The code-heavy turns moved from 23-26 to 27.4-29.5 and the median crossed 30; the 13K decode is 40.45 and the
+fixed MoE warm-up decode 53.9.  The split is in the hybrid/fastdec performance configs; the v2 quality config
+keeps the exact path (the split's last-place rounding).

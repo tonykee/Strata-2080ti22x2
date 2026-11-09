@@ -64,6 +64,7 @@
     "DS4_TP_SHARES": "4,5",
     "DS4_DSPARK_CONF": "0.3",
     "DS4_CACHE_SUB_RATIO": "0.1",
-    "DS4_ROLLBACK_BATCH": "1"
+    "DS4_ROLLBACK_BATCH": "1",
+    "DS4_ATTN_SPLIT": "1"
   }
 }
