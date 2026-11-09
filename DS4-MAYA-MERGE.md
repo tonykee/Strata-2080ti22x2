@@ -1170,3 +1170,24 @@ experts, small-M expert GEMMs) plus the head wait and the AR, not a scheduling k
 the 13K prompt is a repetitive continuation with 100% draft acceptance; the generic 6-turn content is 19-25.
 Closing the decode gap to Maya's clean 45.5 needs grouped/fused expert GEMMs and a cheaper head/AR (kernel
 work), not another setting.
+
+## Decode config: 30+ on the fast state (2026-11-09/10)
+
+Combining three measured levers - `DS4_TP_SHARES=4,5` (decode +6% in the earlier A/B), `DS4_DSPARK_CONF=0.3`
+(longer draft windows, +5%), and `DS4_CACHE_SUB_RATIO=0.1` (Maya's approximate cache-aware routing, +15% in a
+degraded state) - on the fast state (warm-up 791):
+
+```text
+6-turn decode: 33.6 / 30.9 / 25.7 / 21.8 / 27.0 / 30.7   median ~28.8
+baseline:      23.2 / 23.6 / 20.0 / 20.0 / 21.5 / 25.5   median ~21.8
+warm-up decode (fixed MoE content): 51.7 against 40.8-42.4
+```
+
+The first, second and last turns are at or above 30; the code-heavy middle turns (a Python example, an async
+version) stay at 21-27.  The cache substitution changes the answers (shorter text, different context lengths),
+so part of the gain is content, not only engine time; Maya's production config uses the same 0.1.  Config:
+`tools/strata-ds4-hybrid-fastdec.json`.
+
+The next load of the same boot fell to warm-up 549.9 and the same 6-turn to 16.7-29.3, so a stable 30-40 claim
+needs a clean boot; and the code turns need the AR/wait path (the cold decode profile: ar2 35.6%, expert-copy
+wait 24.1%, wait_seq 8.6%) or a grouped expert GEMM, not another config.
