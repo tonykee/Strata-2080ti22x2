@@ -1027,3 +1027,22 @@ Re-testing the existing flow path (`DS4_FLOW_TP=1`) on the same boot: 13,164 tok
 (warm-up 729.9 against 802 for the chunk path), 6.6K 723.1, decode 17.6 - the flow does not realize the gain;
 it stays off.  The structural next step is a slab-wise all-reduce in the chunk path (the attention already runs
 in 2048-row slabs), not another setting.
+
+## Existing all-reduce toggles re-measured (2026-11-09)
+
+Same boot, warm-up 10.7K as the state gauge (clean chunk run: 802 -> 810 tok/s):
+
+```text
+DS4_AR2=2 (FP16 pipelined put+sum): warm-up 757, 13K 759.4, 1.6K 563.1, decode 17.1
+DS4_AR2=1 (F32 pipelined):          warm-up 632, 13K 399.5 - much worse, rejected
+DS4_FLOW_TP=1:                      warm-up 730, 13K 743.9 - worse, rejected
+chunk baseline:                     warm-up 802, 13K 810.1
+```
+
+AR2=2 is roughly neutral on the 13K after the state gauge (759/757 against 810/802) and better on a 1.6K turn
+(563 against 396), but its wire is FP16 (approximate); AR2=1 collapses.  None of the existing toggles closes
+the 20%: the all-reduce must be overlapped with the next slab's compute (or fused into the attention as Maya's
+flow appears to do), which is a code change, not a setting.
+
+The full clean reference from this boot: Maya's server still answered 13,165 tokens in 13.48 s = **976.3 tok/s,
+decode 43.0** while the Strata flow test was being set up, confirming the clean Maya fast path.
