@@ -742,3 +742,20 @@ VRAM experts 2,727 + 2,343 = 5,070 (ring 400: 5,900), stream 26,034 experts a de
 The deeper ring cut the expert stage by ~0.35 s but lost 830 experts, adding 1,660 expert streams and ~3.3 GB of
 gate/up a device; the total was slightly worse.  Combined with the earlier ring 800 / kParts 8 / early copy_ahead
 / flow tests, the copy pipeline is at its scheduling limit for this quant and 44 GB of VRAM.
+
+## Persistent per-expert copy pump (DS4_COPY_PUMP=1) (2026-11-09)
+
+A thread of its own issues the streamed experts' batches as ring slots free; the main thread only waits for
+the batch's filled event (`cp > kp` then `cudaStreamWaitEvent`).  It is gated to the full-copy chunks
+(`skip_unpicked_rows` 0), the copied-and-pinned RAM source, and the non-flow path; the streamer's `cp`/`kp` are
+atomics and the pump reports a copy error through `S.bad`.  Hybrid, 13K, same state:
+
+```text
+pump:    17.69 s = 738.0 tok/s, experts 9.20 s
+no pump: 17.75 s = 735.6 tok/s, experts 9.24 s
+first tokens identical: 455,2502,344,260,1606,...
+```
+
+The persistent schedule removes the host gaps between `copy_ahead` calls (about 0.3% here); the ring slots
+and the copy/compute balance still set the pace, so it is a small but exact gain.  Enabled in the hybrid and
+v2 tuned configs.

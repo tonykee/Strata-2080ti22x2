@@ -58,6 +58,7 @@
     "DS4_LAND": "0",
     "DS4_ATTN_SLAB": "2048",
     "DS4_AR2_DECODE": "1",
-    "DS4_STREAM_ZC": "1"
+    "DS4_STREAM_ZC": "1",
+    "DS4_COPY_PUMP": "1"
   }
 }

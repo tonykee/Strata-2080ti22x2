@@ -4864,8 +4864,12 @@ struct Model::Impl {
     };
     struct Streamer {
         std::vector<Batch> b;
-        size_t cp = 0, kp = 0;        // the next batch to copy, to compute
+        std::atomic<size_t> cp{0}, kp{0};   // the next batch to copy, to compute
         std::atomic<size_t> done{0};  // cp, for read_ahead's thread
+        // DS4_COPY_PUMP=1: a thread of its own copies the batches as soon as a ring slot frees (the main thread only
+        // waits on the filled events), instead of the main thread calling copy_ahead at each batch boundary
+        std::atomic<bool> pump{false}, bad{false};
+        std::string bad_err;
         // DS4_SKIP_UNPICKED_ROWS / DS4_SKIP_UNPICKED (Project Maya #691): a chunk of few rows streams only the experts some
         // row of it picked - the copies of its layer wait for the layer's routing (routed_layer / routed_chunk, the
         // experts' row bounds in routed_bounds), then copy the picked ones into the same slots and batches
@@ -4930,12 +4934,13 @@ struct Model::Impl {
     }
     bool copy_ahead(Dev& d, Chunk& c, Streamer& S, int di, std::string& err) {
         const int P = Chunk::kParts;
-        while (S.cp < S.b.size() && S.cp < S.kp + P) {
-            const Batch& bt = S.b[S.cp];
+        while (S.cp.load() < S.b.size() && S.cp.load() < S.kp.load() + P) {
+            const size_t cpi = S.cp.load();
+            const Batch& bt = S.b[cpi];
             // a chunk that streams only its picks waits for its layer's routing
             const bool skip_unpicked = S.skips(bt.k);
             if (skip_unpicked && (bt.il != S.routed_layer || bt.k != S.routed_chunk)) break;
-            const int half = (int) (S.cp % P);
+            const int half = (int) (cpi % P);
             const Layer& l0 = L[(size_t) bt.il];
             const auto picked = [&](int i) {
                 if (!skip_unpicked) return true;
@@ -4945,7 +4950,7 @@ struct Model::Impl {
             int mi = 0;
             for (int m = 0; m < l0.nm; ++m)
                 if (member(l0, m).dev == di) mi = m;
-            if (S.cp >= (size_t) P) CK(cudaStreamWaitEvent(c.cs, c.freed[half], 0));
+            if (cpi >= (size_t) P) CK(cudaStreamWaitEvent(c.cs, c.freed[half], 0));
             // A pinned full RAM copy can be DMA'd from where it lies.  Only batch members without
             // such a copy go through the pinned staging; the old path staged every expert even when
             // the copy was already pinned, which made the prompt's DMA read RAM twice.
@@ -4959,7 +4964,7 @@ struct Model::Impl {
             uint8_t* sb = nullptr;   // in place: the batch's regions in the part's staging slots
             if (c.stage != nullptr && need_stage) {
                 const double t_evt = now_ms();
-                if (S.cp >= (size_t) P) CK(cudaEventSynchronize(c.filled[half]));   // (its last batch's copies out)
+                if (cpi >= (size_t) P) CK(cudaEventSynchronize(c.filled[half]));   // (its last batch's copies out)
                 c.dbg_evt_ms += now_ms() - t_evt;
                 sb = c.stage + (size_t) half * (c.ring_n / P) * c.stage_stride;
                 std::atomic<bool> bad{false};
@@ -5005,8 +5010,8 @@ struct Model::Impl {
             }
             c.dbg_dma_ms += now_ms() - t_dma;
             CK(cudaEventRecord(c.filled[half], c.cs));
-            ++S.cp;
-            S.done.store(S.cp, std::memory_order_relaxed);
+            S.cp.store(cpi + 1, std::memory_order_release);
+            S.done.store(cpi + 1, std::memory_order_relaxed);
         }
         return true;
     }
@@ -12394,8 +12399,8 @@ struct Model::Impl {
         // in shares between them (the device works while the copies run)
         const int di = l.dev, P = Chunk::kParts;
         int nb = 0;
-        for (size_t q = S.kp; q < S.b.size() && S.b[q].il == L0.il && S.b[q].k == wp.k; ++q) ++nb;
-        if (S.skips(wp.k) && nb > 0) {   // (this layer routed: its picked experts are the ones to copy)
+        for (size_t q = S.kp.load(); q < S.b.size() && S.b[q].il == L0.il && S.b[q].k == wp.k; ++q) ++nb;
+        if (!S.pump.load() && S.skips(wp.k) && nb > 0) {   // (this layer routed: its picked experts are the ones to copy)
             S.routed_layer = L0.il;
             S.routed_chunk = wp.k;
             S.routed_bounds = b;
@@ -12403,16 +12408,23 @@ struct Model::Impl {
         }
         int v_done = 0;
         for (int bi = 0; bi < nb; ++bi) {
-            const Batch& bt = S.b[S.kp];
-            const int half = (int) (S.kp % P);
+            const size_t kpi = S.kp.load();
+            const Batch& bt = S.b[kpi];
+            const int half = (int) (kpi % P);
+            if (S.pump.load()) {
+                while (S.cp.load(std::memory_order_acquire) <= kpi) {
+                    if (S.bad.load(std::memory_order_acquire)) { err = S.bad_err; return false; }
+                    std::this_thread::yield();
+                }
+            }
             CK(cudaStreamWaitEvent(s, c.filled[half], 0));
             const int v0 = L0.pv_n + bt.j0;
             if (!run_set(d, c, l, c.ring + (size_t) half * (c.ring_n / P) * c.ring_stride, v0, c.ring_stride, c.bounds,
                          b.data(), v0, v0 + bt.n, T, err))
                 return false;
             CK(cudaEventRecord(c.freed[half], s));
-            ++S.kp;
-            if (!copy_ahead(d, c, S, di, err)) return false;
+            S.kp.store(kpi + 1, std::memory_order_release);
+            if (!S.pump.load() && !copy_ahead(d, c, S, di, err)) return false;
             const int v_to = (int) ((int64_t) L0.pv_n * (bi + 1) / nb);
             if (!run_vram(d, c, L0, l, l, b.data(), v_done, v_to, T, err)) return false;
             v_done = v_to;
@@ -12710,7 +12722,40 @@ struct Model::Impl {
                 if (th.joinable()) th.join();
             }
         } ra_join{ra_stop, ra};
-        if (!copy_ahead(d, c, S, di, err)) return false;
+        // DS4_COPY_PUMP=1: a thread issues the batches as the ring frees, so the main thread only waits on the
+        // filled events; only the full-copy chunks (skip_unpicked_rows 0), the copied-and-pinned RAM source
+        static const bool pump_env = [] {
+            const char* e = std::getenv("DS4_COPY_PUMP");
+            return e != nullptr && std::atoi(e) != 0;
+        }();
+        const bool pump_on = pump_env && !c.flow && copy_mode && ram_pinned && skip_unpicked_rows() == 0 && !S.b.empty();
+        std::atomic<bool> pump_stop{false};
+        std::thread pump;
+        if (pump_on) {
+            S.pump.store(true);
+            pump = std::thread([this, &d, &c, &S, di, &pump_stop] {
+                cudaSetDevice(d.id);
+                std::string e;
+                while (!pump_stop.load(std::memory_order_relaxed)) {
+                    const size_t before = S.cp.load(std::memory_order_relaxed);
+                    if (!copy_ahead(d, c, S, di, e)) {
+                        S.bad_err = e;
+                        S.bad.store(true, std::memory_order_release);
+                        break;
+                    }
+                    if (S.cp.load(std::memory_order_relaxed) == before) std::this_thread::yield();
+                }
+            });
+        }
+        struct PumpJoin {
+            std::atomic<bool>& stop;
+            std::thread& th;
+            ~PumpJoin() {
+                stop.store(true);
+                if (th.joinable()) th.join();
+            }
+        } pump_join{pump_stop, pump};
+        if (!S.pump.load() && !copy_ahead(d, c, S, di, err)) return false;
         // this device's Engram layers: chunk k's rows read on a helper thread while chunk k - 1 runs (slot k % 2, once
         // chunk k - 2's copy of it is done)
         std::vector<int> egs;
