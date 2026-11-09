@@ -838,3 +838,60 @@ The remaining 4.3 s is in the GPU stream's per-layer work (attention ~7.5 s a de
 Peer AR in FP16 (`DS4_PEER_AR_F16=1`), hybrid 13K, same slow state: prefill 746.9 tok/s (17.48 s) against
 736.6 (17.73 s) for the F32 peer AR, host sync 14.07 against 14.33 s - about 1.4%, and the wire is
 approximate (both partials rounded to FP16).  It stays opt-in; the default remains F32.
+
+## The 1018 tok/s benchmark is a warm, repeated-text read (2026-11-09)
+
+Maya's `bench_ds4.py` prompt is not a document: it is one ~60-character paragraph repeated to the requested
+length (`BASE * int(n * 1.4 / len(BASE))`).  Its 13K run at 1018 tok/s is the **second** read of that prompt in
+the same session, after a 2-round warm-up.  The engine log from that run:
+
+```text
+maya ds4 serve: prompt 13165 tokens = 0 reused + 13165 read in 12919 ms (1019.0 tok/s)
+  CPU lane 0.0% of the experts ... expert cache 98.9% hit
+```
+
+Cold, the same engine and the same 13,058-token prompt took **96.5 s (135 tok/s)** on the timing pick's windows
+path and **125.4 s (104 tok/s)** forced to the chunked path; Strata's cold read of the same prompt is 17.8 s
+(734 tok/s).  Maya's own docs (`docs/2080ti22gx2/DS4_V2_EXPERT_CACHE.md`, `BENCHLOG.md`) say the ~1000 number
+needs `DS4_SETTLE_MS=2000` + two warm-up rounds and that repeated model reloads leave the host below that until
+a reboot.
+
+Same boot, same repeated prompt, same 2-round warm-up (220 W, pool kept):
+
+```text
+Strata hybrid + pump + route fuse: 13,162 in 17.81 s = 739.0 tok/s; decode 10.5
+Maya v1, no profiler:              13,162 in 24.31 s = 541.3 tok/s; decode 31.4
+Maya v1, DS4_PROF=1:               13,162 in 23.81 s = 552.9 tok/s
+```
+
+So in this degraded host state Strata's prefill is 37% faster than Maya's on the identical prompt; the
+remaining decode gap is the CPU lane (Strata's per-token CLI wait 43.9 ms against 18-20 ms after a clean boot)
+and needs a clean boot to separate host state from code.  The clean 1018 is a best-case warm number, not a
+floor.
+
+## DS4_TP_SHARES ported (opt-in, default unchanged) (2026-11-09)
+
+Maya's static FFN shares, `DS4_TP_SHARES=4,5` (member m takes w_m of sum(w) whole quant blocks), added to the
+GGUF split.  With `--gpus 0,1` member 0 carries the output head, so `4,5` gives the head device 1024 of the
+2304 FFN and the other 1280.  Hybrid 13K, 220 W, same boot:
+
+```text
+DS4_TP_BALANCE=0 (rotation, 4/5 round the layers): 738.5 tok/s, streams 58.65 / 58.68 GB
+default balance planner:                           734.0 tok/s, streams 55.50 / 60.64 GB
+DS4_TP_BALANCE=0 DS4_TP_SHARES=4,5:                734.6 tok/s, streams 50.78 / 63.48 GB
+```
+
+The head-side 1024 is not a win here; the balanced rotation is best and the default stays.  The share env is
+kept for packs/layouts where the output head's device needs the smaller slice.
+
+## Warm-up added (2026-11-09)
+
+`tools/warmup_ds4.py` (Maya's script) sends a short decode, 1.6K and 13K reads and a decode, twice; placement
+only, no output change.  Run it after `/health`:
+
+```sh
+./.venv/bin/python tools/warmup_ds4.py --rounds 2
+```
+
+Without it the first real request pays the expert-cache fill: in this state the first short decode measured
+5.9 tok/s and the first 1.6K read 117 tok/s, then 28.0 and 545 tok/s after the two rounds.

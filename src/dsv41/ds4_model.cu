@@ -169,6 +169,25 @@ bool split_blocks(int whole, int np, int p, int block, int& off, int& n, int rot
     return true;
 }
 
+// DS4_TP_SHARES=4,5 (Project Maya's static shares): every GGUF group of this width splits its n_ff in these
+// whole quant blocks, member m taking w_m of sum(w) - the head device's 4 against the other's 5, say, so the
+// member that carries the output head keeps the smaller experts.  Empty: the rotation (and DS4_TP_BALANCE).
+const std::vector<int>& tp_share_pattern() {
+    static const std::vector<int> w = [] {
+        std::vector<int> v;
+        const char* e = std::getenv("DS4_TP_SHARES");
+        if (e == nullptr || *e == 0 || std::strcmp(e, "off") == 0) return v;
+        std::stringstream ss(e);
+        std::string part;
+        while (std::getline(ss, part, ',')) {
+            if (part.empty() || part.find('/') != std::string::npos || part.find(':') != std::string::npos) return std::vector<int>{};
+            v.push_back(std::atoi(part.c_str()));
+        }
+        return v;
+    }();
+    return w;
+}
+
 std::string read_file(const std::string& p) {
     std::ifstream f(p);
     std::stringstream ss;
@@ -2702,6 +2721,7 @@ struct Model::Impl {
             const Group& group = groups[gi];
             const int nm = (int) group.mem.size();
             if (nm <= 1 || g.ff % block != 0 || g.ff / block < nm) continue;
+            if ((int) tp_share_pattern().size() == nm) continue;   // (DS4_TP_SHARES: the static split is the plan)
             const int max_blocks = (g.ff / block + nm - 1) / nm;
             std::vector<size_t> indices;
             std::vector<TpBlockLayer> layers;
@@ -3501,6 +3521,22 @@ struct Model::Impl {
                     x.ff0 = ff_at;
                     x.ffn = tp_blocks[(size_t) l.il][(size_t) m] * ff_block;
                     ff_at += x.ffn;
+                } else if (gguf_x && (int) tp_share_pattern().size() == l.nm) {
+                    const std::vector<int>& w = tp_share_pattern();
+                    int sum = 0, before = 0;
+                    bool pos = true;
+                    for (int j = 0; j < l.nm; ++j) {
+                        pos = pos && w[(size_t) j] > 0;
+                        sum += w[(size_t) j];
+                        if (j < m) before += w[(size_t) j];
+                    }
+                    if (!pos || sum <= 0 || g.ff % sum != 0 || (g.ff / sum) % ff_block != 0) {
+                        err = "DS4_TP_SHARES: n_ff " + std::to_string(g.ff) + " does not split in these shares in " +
+                              std::to_string(ff_block) + "-value blocks";
+                        return false;
+                    }
+                    x.ff0 = g.ff / sum * before;
+                    x.ffn = g.ff / sum * w[(size_t) m];
                 } else if (gguf_x)
                     split_blocks(g.ff, l.nm, m, ff_block, x.ff0, x.ffn, l.il % l.nm);
                 else
