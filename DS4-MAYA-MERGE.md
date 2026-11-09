@@ -958,3 +958,19 @@ kParts 4 + ring 400: 1,615 4.08 s = 396.1; 6,564 10.06 s = 652.6; 13,160 20.39 s
 
 No change on the long chunks (the 1.6K difference is the skip path's noise), so the ring depth and part count
 are not the remaining 13K cost; reverted to 4/400.
+
+## Cache substitution: Maya runs it, Strata's tuned config did not (2026-11-09)
+
+Maya's production config carries `MAYA_DS4_CACHE_SUB_RATIO=0.1` (with N=12, budget 0.6, reference norm): the
+approximate cache-aware routing that measured **decode +38%** in its own log (32.3 -> 44.6 tok/s) and changes
+answers.  Strata's tuned config carried N/budget/norm but **no ratio**, so the substitution was off.  Same
+degraded state (warm-up 10.7K 547 against 543), hybrid bench:
+
+```text
+13K prefill: 647.6 against 645.5 tok/s   (unchanged, as expected: prefill has no substitution)
+decode:      12.7 against 11.0-11.4      (+15% in this state)
+```
+
+The gain is real but below Maya's +38%, and the option is approximate: it stays **opt-in**.  Enable it for a
+performance-first server with `DS4_CACHE_SUB_RATIO=0.1` beside the N/budget/norm settings already in the
+config; keep it off for quality comparisons.  It is not specific to the prefill target.
