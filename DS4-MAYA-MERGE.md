@@ -585,3 +585,16 @@ draft is verified like any other, so the output is unchanged.
 The chain's multi-turn check (server, `--lookup-chain 4`, same 4 turns): 22.1 / 29.3 / 28.4 / 35.9 tok/s,
 against 24.0 / 25.7 / 38.9 / 44.1 without it - the chain's rows were rejected and cost more than they added.
 The fat config keeps the option off; it stays available for long, exactly repeated text.
+
+## Flow TP in the slow host state (2026-11-09)
+
+13K prompt, slab 2048, same period:
+
+```text
+DS4_FLOW_TP=0: 23.55 s (554.5 tok/s), experts 12.28 s, ffn mHC+router+sort 9.18 s, between layers 0.46 s
+DS4_FLOW_TP=1: 21.16 s (617.1 tok/s), experts 16.26 s, ffn mHC+router+sort 2.88 s, between layers 0.03 s
+```
+
+The flow trades a larger expert stage for a much smaller host-side ffn/between stall; the first token is 455 in
+both.  It is **not** enabled by default: in the clean fast state no-flow's ffn is already 2.8 s, so the flow's
++4 s expert stage would likely dominate.  Needs a fast-state A/B after a reboot; `DS4_FLOW_TP=1` is the switch.
