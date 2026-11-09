@@ -1063,3 +1063,9 @@ The peer AR kernel's 64 spin-wait blocks compete with the attention for SMs, and
 than that contention; reverted (the default path is unchanged).  The next form would be the all-reduce fused
 into the attention kernel (Maya's `sparse_attn_packed` path appears to do the reduction inside), not a second
 stream.
+
+## Qwen port candidates
+
+The ideas from this work that may transfer to Qwen3.8-Flash-Next (`src/qwen35/`) - short-chunk skip-unpicked
+streaming, a huge-page host arena, and the clean-state benchmark gauge, with what q36 already has and what does
+not apply - are collected in `docs/QWEN_PORT_CANDIDATES.md`.  Candidates only: no Qwen measurements yet.
