@@ -51,3 +51,12 @@ Record:
 - decode 128 tok/s
 - `HugePages_Free` during load
 - `nvidia-smi` clocks/power/PCIe during load
+
+
+## The fast state after a reboot (measured 2026-11-09)
+
+The first two engine starts after a reboot run the 13K prompt at ~710 tok/s (load 53.8 s); the third
+and later run ~560 tok/s (load 64-70 s), even with the huge-page pool kept, the ordinary THP arena,
+a fixed expert profile, or the model page cache dropped. Only a reboot restores 710. Keep a server
+running after a fresh boot for the fast state; `stop_cpu_lane.sh` now keeps the pool by default and
+takes `--release` when another model needs the RAM.

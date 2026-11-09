@@ -448,3 +448,36 @@ state, and the approximate V7 arithmetic, so off by default.
 
 Decode remains the open gap: 29.7 tok/s on the 13K prompt and 13-17 on short natural prompts,
 against Maya's 31.2 on its bench and 25.8 after a warmup.  40+ is not reached.
+
+## The first two engine starts after a boot are the fast ones (2026-11-09 10:05)
+
+A second clean boot, the 13K prompt, one engine process a run, the huge-page pool reserved once
+and **never released** between runs:
+
+```text
+start 1: load 53.8 s, prefill 18.40 s = 709.6 tok/s, decode 29.4
+start 2: load 53.6 s, prefill 18.27 s = 714.9 tok/s, decode 28.0
+start 3: load 64.3 s, prefill 23.21 s = 562.6 tok/s, decode 18.5
+start 4: load 66.1 s, prefill 23.61 s = 553.1 tok/s, decode 17.2
+start 5: 564.4, start 6: 564.0
+```
+
+So keeping the pool does **not** keep the fast state.  The third start and later are ~21% slower,
+and the load's copy falls from 1.68 to 1.4 GB/s with them.  Checked and ruled out:
+
+- huge pages vs the ordinary THP arena (`DS4_COPY_HUGETLB=0` after a release): 564.1 / 563.8,
+  the same slow state;
+- the learned expert profile (`--expert-profile /tmp/fixed.bin --profile-readonly`): 549.8 / 553.1;
+- the model files' page cache (a userspace `posix_fadvise(DONTNEED)` over every GGUF, 1.4 GB cached
+  left): 561.2, load 70.1 s;
+- GPU throttling: 63 C max, 1905 MHz, 257 W; CPU package 48 C, 3.2-3.5 GHz; NVMe 46 C, no alarm;
+- memory pressure: `/proc/pressure/memory` ~0, no direct reclaim.
+
+Only a reboot restores 710.  The degradation is not tied to huge pages, the profile, or the page
+cache; a fresh boot's first two 90 GB arena allocations and their DMA/CPU-lane reads are fast, later
+ones are not.  A server kept running after a fresh boot keeps its arena and should stay on the fast
+side; restarting the engine is what loses it.
+
+`stop_cpu_lane.sh` now keeps the pool by default (use `--release` when another model needs the RAM).
+A script that guarantees 710 per one-shot run would have to reboot first; `reboot` is not in the
+NOPASSWD set here.
