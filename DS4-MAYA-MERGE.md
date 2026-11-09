@@ -499,3 +499,23 @@ Ported the glue:
 The comparison that started this: on the same 26-token prompt and host state, Maya measured 18.34 tok/s with
 103 drafts/85 kept; Strata (before the lookup) measured 17.60 with 128 drafts/86 kept.  The apparent Maya lead
 was host state and prompt content, not the drafter.  The lookup is a real missing feature and is now in.
+
+## Prompt-lookup tuning: default off until the cold start is fixed (2026-11-09)
+
+The first wiring chose lookup windows from the draft policy's optimistic priors before any acceptance was
+measured.  Two gates from Maya and a cap followed: the lookup must start with DSpark's first draft, its window
+must be longer than the MTP cut, and it is capped at 8 drafts; the policy margin is 0.25.
+
+Measured on an 832-token JSON-list prompt, 96 greedy tokens, one host state:
+
+```text
+--suffix-draft 0 (off): 31.3 tok/s, 26 rounds, 3.69 tokens/round
+--suffix-draft 3 (first wiring): 20.4 tok/s, 103 drafts offered, 73 kept
++ gates: 23.8 then 26.9 tok/s (the cold-start probe still verifies an 8-row window for 1 kept draft)
+```
+
+On long repeats it still pays: a 4-turn conversation's last answer verified 50/50 drafts, per-position rows
+1..8 all kept, **47.4 tok/s**; the 5347-token natural prompt went 27.2 -> 29.1 tok/s with 7 lookup rounds.
+So `--suffix-draft` defaults to **0 (off)**; `--suffix-draft 3` turns it on for code/quoted/list content, and
+the next step is to make the cold start safe (lookup only when the MTP cut is 0, or a conservative prior until
+the first acceptance) so it can be on by default.

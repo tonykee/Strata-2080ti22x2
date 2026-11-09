@@ -259,7 +259,7 @@ struct Lookup {
     std::vector<int32_t> buf;
     long long windows = 0, offered = 0, accepted = 0;   // the lookup's own rounds and drafts
     Lookup(int min_match, int max_t, size_t cap)
-        : sfx(min_match, 64, cap), policy(max_t), buf((size_t) std::max(1, max_t) + 1) {}
+        : sfx(min_match, 64, cap), policy(max_t, 0.25), buf((size_t) std::max(1, max_t) + 1) {}
     void start(const std::vector<int32_t>& ctx) {   // a request's history: what the state has consumed
         sfx.reset();
         sfx.append(ctx.data(), ctx.size());
@@ -332,11 +332,17 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
         bool from_lk = false;
         if (lk != nullptr && room > 1) {
             lk->policy.set_context(m.pos());
-            const int k = lk->sfx.propose(std::min(room - 1, m.verify_max() - 1), lk->buf.data());
-            if (k > 0) {
+            // (at most 8 drafts: the head walks 8 rows in one pass; a lookup 15 rows long costs far more than
+            // its extra tokens, measured on a code prompt: 31.3 tok/s without the lookup, 18.6 with it)
+            const int k = lk->sfx.propose(std::min(room - 1, std::min(8, m.verify_max() - 1)), lk->buf.data());
+            // only where the lookup starts with DSpark's first draft (Maya's gate): a lookup that disagrees there
+            // is a different continuation, and verifying its long window costs more than the drafter's short one
+            if (k > 0 && !drafts.empty() && lk->buf[0] == drafts[0]) {
                 lk_match = lk->sfx.last_match();
                 const strata::spec::DraftPolicy::Pick pk = lk->policy.choose(keep + 1, k, lk_match);
-                if (pk.lookup && pk.t > 1) {
+                // only a lookup window longer than the drafter's cut is worth its verify rows (a shorter one
+                // replaces a longer DSpark window and costs speed, measured on a code prompt: 31.3 -> 23.8 tok/s)
+                if (pk.lookup && pk.t - 1 > keep) {
                     const int nk = std::min(pk.t - 1, k);
                     drafts.assign(lk->buf.begin(), lk->buf.begin() + nk);
                     keep = nk;
@@ -2554,7 +2560,9 @@ int main(int argc, char** argv) {
     strata::ds4::Options o;
     std::string ids_s, dump, eos = "1";
     int n = 0, window = 0;   // (0: the model's feed unit - a whole prompt on the chunked path; 16 for the scoring runs)
-    int suffix_draft = 3;    // --suffix-draft N: the prompt lookup's shortest match (0: off), as Maya
+    int suffix_draft = 0;    // --suffix-draft N: the prompt lookup's shortest match (0: off; N: on, Maya's 3)
+                             // (off by default: it helps long repeats - a multi-turn answer at 47.4 tok/s - and
+                             //  costs on ordinary code: 31.3 -> 26.9/18.6 tok/s in the 832-token JSON test)
     bool spec = true;
     float temp = 0.0f;   // the CLI's sampling (0: greedy)
     unsigned long long cli_seed = 1;
