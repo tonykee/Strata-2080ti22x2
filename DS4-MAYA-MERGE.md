@@ -795,3 +795,19 @@ pair; `0` disables both.
 Gated and default on, the same 4-turn conversation through the server: 23.3 / 24.9 / 25.6 / **48.0 tok/s**
 (the fourth answer 50 of 51 drafts, positions 1..5) - the best warm decode measured, against 47.3 before the
 route pair and 53.0 for the v1 pack.
+
+## Clean reboot validation: 759.6 tok/s (2026-11-09, 250 W)
+
+Fresh boot, the huge-page pool reserved once and kept (not released), hybrid + copy pump + route fuse:
+
+```text
+13K prefill: 17.19 s = 759.6 tok/s   (new best; 740.1 before the reboot, 2.6% higher)
+13K decode:  26.63 tok/s in this boot/profile
+4-turn:      23.3 / 21.9 / 30.0 / 36.6 tok/s
+```
+
+The 4-turn answers this boot were a different text (fresh-boot allocation order moves the GEMM rounding, so
+the greedy answer differs); the earlier 48.0 and 53.0 warm peaks were other answer shapes.  Prefill is the
+stable metric: the clean boot adds 2.6%, and the remaining gap to 1000 (24%) is the IQ1_S gate/up stream and
+the 44 GB of VRAM, not host state.  The pool is kept reserved for the next start; stop with `--release` only
+when another model needs the RAM.
