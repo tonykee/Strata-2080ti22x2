@@ -612,3 +612,21 @@ on:  decode 18.18 tok/s, layers 20.23 ms/token   (first token 455 in both; exact
 ```
 
 `DS4_AR2_DECODE=1` is now in both tuned configs.  It is exact, so no output check beyond the token match is needed.
+
+## 220 W fast state: 731.7 tok/s prefill, 30.8 decode (2026-11-09)
+
+The host returned to the fast state at the user's 220 W setting (no reboot).  13K prompt, slab 2048,
+AR2_DECODE, peer AR, V7:
+
+```text
+ZC=1: prefill 17.85 s = 731.7 tok/s, decode 29.31 tok/s
+ZC=0: prefill 17.92 s = 728.7 tok/s, decode 28.24 tok/s
+fixed expert profile, ZC=0: 725.4 / 30.24; ZC=1: 724.5 / 30.79
+```
+
+- **731.7 tok/s** is the best 13K prefill measured, at 220 W (above the earlier 719 at 250 W).
+- `DS4_STREAM_ZC=1` is now in both configs: prefill neutral, decode +1.8% in the fixed-profile A/B.
+- Flow TP in the same fast state: **695.8 tok/s** against 731.7 without it - the flow's larger expert stage
+  loses once the host-side ffn stall is gone.  It stays off.
+- The v1 pack (IQ1_S down) in the same state: 561.9 tok/s and decode 11.9, its profile placing only 5,344
+  experts in VRAM and 41% of decode picks on the CPU lane.  The v2 pack stays.
