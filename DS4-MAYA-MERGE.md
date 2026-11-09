@@ -638,3 +638,21 @@ The earlier 44.1 / 47.4 rounds were a particular answer's repeating pattern with
 the slab change moves the prompt GEMM's rounding, so the greedy answer (and its repetition) differs and the
 lookup window no longer extends.  The 13K decode is the stable number: 30.8 tok/s; 40+ appears on warm
 conversations whose answers repeat, and is content-dependent, not a floor.
+
+## Copy-pipeline experiments at 220 W (2026-11-09)
+
+The remaining prefill gap is the expert copy stream: a layer's ~2.25 GB into a 400 MB ring, 6.6 s of expert
+GEMM and ~2.9 s of waits over the 13K prompt.  Tried and measured:
+
+```text
+early copy_ahead at the start of each layer (before attention, chunks that copy all): 727.2 tok/s,
+  experts 9.59 s - no gain over 728-732; reverted (the first batches were already covered)
+DS4_RING_MB=800, fixed profile: prefill 726.4 / decode 29.8; ring 400 in the same pair 645.3 / 30.1
+  (the pair's first run caught a slow host state; no reliable ring gain)
+Chunk::kParts 8 (finer batches, same 400 MB): 719.3 tok/s, experts 10.05 s - worse; reverted
+DS4_FLOW_TP=1 in the fast state: 695.8 tok/s - worse; stays off
+```
+
+The copies aggregate ~9.5 GB/s over the two PCIe 3.0 links (each 12.2 GB/s), with the 2.9 s of waits spread
+over the layers; the ring depth and batch granularity are not the limit in these tests.  Next would be a
+persistent per-expert copy schedule or more VRAM experts, not another ring size.
