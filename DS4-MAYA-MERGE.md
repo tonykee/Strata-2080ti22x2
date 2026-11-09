@@ -581,3 +581,7 @@ prompt, same host state, 64 tokens:
 
 Neutral on that prompt (the chain rows were mostly rejected); it stays opt-in for long repeats.  Every chained
 draft is verified like any other, so the output is unchanged.
+
+The chain's multi-turn check (server, `--lookup-chain 4`, same 4 turns): 22.1 / 29.3 / 28.4 / 35.9 tok/s,
+against 24.0 / 25.7 / 38.9 / 44.1 without it - the chain's rows were rejected and cost more than they added.
+The fat config keeps the option off; it stays available for long, exactly repeated text.
