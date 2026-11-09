@@ -1046,3 +1046,20 @@ flow appears to do), which is a code change, not a setting.
 
 The full clean reference from this boot: Maya's server still answered 13,165 tokens in 13.48 s = **976.3 tok/s,
 decode 43.0** while the Strata flow test was being set up, confirming the clean Maya fast path.
+
+## Slab-wise attention all-reduce (opt-in) measured, not faster (2026-11-09)
+
+Implemented `DS4_AR_SLAB=1`: the attention-output all-reduce per 2048-row slab on a second stream, overlapping
+slab k's AR with slab k+1's attention.  Each element still sums member 0's + member 1's partial in the same
+order, and the 13K run's 16 tokens were **identical** with it on and off - the split is exact.
+
+```text
+same degraded state, CLI 13K (prompt-13k.txt):
+  off: 22,373 ms = 583.6 tok/s
+  on:  23,057 ms = 566.3 tok/s   (-3%)
+```
+
+The peer AR kernel's 64 spin-wait blocks compete with the attention for SMs, and the overlap gain is smaller
+than that contention; reverted (the default path is unchanged).  The next form would be the all-reduce fused
+into the attention kernel (Maya's `sparse_attn_packed` path appears to do the reduction inside), not a second
+stream.
