@@ -898,3 +898,30 @@ default); the default stays off so a start returns at once.
 
 Without it the first real request pays the expert-cache fill: in this state the first short decode measured
 5.9 tok/s and the first 1.6K read 117 tok/s, then 28.0 and 545 tok/s after the two rounds.
+
+## Clean boot, 220 W: 810 tok/s on the repeated prompt (2026-11-09)
+
+Fresh boot, the huge-page pool reserved once, `STRATA_WARMUP=1` (two rounds), hybrid + pump + route fuse:
+
+```text
+warm-up: 1.3K 199.3 s/6.57 then 251.9/5.20; 10.7K 700.6 s/15.25 then 802.6/13.31; decode 30.2
+bench:   1,615  4.55 s = 355.3 tok/s
+         6,560  7.94 s = 826.4 tok/s
+        13,162 16.25 s = 810.1 tok/s; decode 17.4 (256-token Python prompts)
+```
+
+The earlier clean-boot Maya reference on the same benchmark (same machine, 220 W) was 507.7 / 825.4 /
+**1018.1** tok/s and decode 45.5.  The 6.6K point is at parity; the 13K is 80% of Maya's and the decode is
+content-dependent.
+
+State gauge: the warm-up's second 10.7K read is **803 tok/s** on the first two loads of this boot.  After
+three more loads it fell to 501/545 and the bench to 649; Maya, started after three Strata loads in the same
+boot, also fell to 485 warm-up / 548 bench (its earlier clean boot: 1000/1018).  A boot therefore gives about
+two fast loads; past that the CPU-lane arena degrades and both engines lose ~35-45% until the next reboot.
+The warm-up rate is the cheapest gauge.
+
+Serve against batch, same 512-token prompt and 256 generated tokens: serve **37.75 tok/s** (6,780.9 ms) against
+batch 37.0 (6,892 ms), so the 17.4 on the Python prompts is not a serve-path cost.  In one serve session the
+same 26-token Python prompt decoded **10.7 tok/s cold and 37.4 tok/s warm** (fourth read), with the draft
+positions 1-5 at 83-100%: the 40+ decode needs the expert cache warm on that content, exactly Maya's
+`vram_hit 0.93-0.99` condition.
