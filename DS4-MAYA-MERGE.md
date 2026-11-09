@@ -671,3 +671,25 @@ v2 pack (default):    prefill 17.85 s = 731.7 tok/s, decode 30.8 tok/s
 The profile was the whole difference (CPU lane 41% -> 18.9%).  v1 trades 3% prefill for 6% decode: its down
 matrices are IQ1_S (1.06 bpw) instead of IQ2_XXS, but its dense weights are 0.9 GB larger, so fewer experts fit
 VRAM.  The default stays v2 (higher quality, faster prefill); v1 is an option for decode-heavy use.
+
+## Hybrid pack: v2 dense + v1 IQ1_S down (2026-11-09)
+
+Built with `tools/make_hybrid_pack.py`: the v2 pack's dense weights, gate and up (smaller than v1's dense),
+with the v1 pack's `w2` (down) experts, IQ1_S instead of v2's IQ2_XXS.  15,360 w2 tensors, 10-12 files,
+the GGUFs symlinked.  Config: `tools/strata-ds4-hybrid-2080ti.json` (v2 learned profile, read-only).
+
+13K prompt, same fast state, 220 W:
+
+```text
+hybrid: prefill 17.75 s = 735.6 tok/s, decode 31.90 tok/s
+        CPU lane 87.1 GB copied, 5,900 VRAM experts (v2: 90.4 GB, 5,746)
+v2:     731.7 / 30.8
+v1:     710.6 / 32.7
+```
+
+4-turn server conversation: 23.1 / 24.6 / 25.5 / **47.3 tok/s**, the last answer 50 of 51 drafts with
+positions 1..5; v1's same conversation reached 53.0.  The hybrid is the best prefill and a better warm decode
+than v2, at v1's lower down precision.
+
+Copy microbenchmark (pinned H2D, 5120 rows): the down's 2D copy (width 200, pitch 450) 8.76 GB/s, a 1D 1 MB
+copy 11.8 GB/s - only 26% apart, not the prompt's limit; the aggregate copy waits are the scheduling limit.
