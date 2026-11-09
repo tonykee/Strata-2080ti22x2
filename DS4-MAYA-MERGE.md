@@ -974,3 +974,33 @@ decode:      12.7 against 11.0-11.4      (+15% in this state)
 The gain is real but below Maya's +38%, and the option is approximate: it stays **opt-in**.  Enable it for a
 performance-first server with `DS4_CACHE_SUB_RATIO=0.1` beside the N/budget/norm settings already in the
 config; keep it off for quality comparisons.  It is not specific to the prefill target.
+
+## Clean boot stage comparison and nsys (2026-11-09)
+
+Maya first (DS4_PROF=1), then Strata (DS4_PROF=1), same boot and pool, 220 W.  Maya's 13K:
+**986.5 tok/s (13.34 s), decode 44.6**; Strata's: 642.3 (20.49 s), decode 10.7 - but DS4_PROF costs Strata
+far more (26% against its unprofiled 810/16.25 s) than Maya (3%), so only the stage shares are comparable:
+
+```text
+                       Maya (sum of 2 devices)   Strata (sum of 2 devices)
+sparse attention        8,674 ms                 8,644 ms      (identical)
+compressor + indexer    1,488                    2,506
+q + q_b                 823                      3,579         (mark placement, see below)
+engram / attn rest      1,845 + 2,136            2,212 + 1,618
+experts                 9,082                    11,005
+routing + shared        2,348                    8,578 (ffn mHC + router + sort + shared)
+```
+
+The q_b GEMM itself was measured before at 0.16 ms reconstruct + 1.4-1.8 ms cuBLAS a slab (~80 ms a prompt a
+device), so the 3.5 s mark is not the GEMM; the same applies to the router/mHC mark.  The one stage that is
+cleanly identical is sparse attention; the experts differ by ~2 s summed.
+
+nsys on a 3.5K prompt (Strata, one chunk): the largest kernel is **`ar_peer_kernel` 28.2% (2.91 s, 160 calls,
+18 ms average, 185 ms max)**, then sparse attention 19.7% (2.04 s), cuBLAS GEMMs ~19.6%, `gemv_f32_rows` 4.7%.
+Maya's direct nsys run fell into its 16-token window path with host-transport-like kernels and is not
+comparable; its server path is the fast one.  The peer kernel sources are the same family (our F16 option is
+the only addition), so the all-reduce share is not a porting gap.
+
+The remaining 20% on the 13K is therefore in the expert stage and/or the flow's overlap, not in a missing
+kernel we can copy.  Locating it needs a low-overhead nsys of Maya's **server** engine on a clean boot (wrap
+its engine in nsys and drive it through the normal warm-up + bench), not another profiled CLI run.
