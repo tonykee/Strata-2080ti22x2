@@ -716,3 +716,29 @@ fast state (695.8 against 731.7 tok/s), so neither flag applies.
 
 The 13K stream is 174 GB over two chunks: 116 GB gate/up and 58 GB down.  The down slice is already minimal;
 the next lever is the gate/up bytes (a lower-bit pack) or more VRAM experts, not DOWN_PART.
+
+## Gate/up inventory and the ring ceiling (2026-11-09)
+
+Every available pack's routed gate/up is **IQ1_S** (30,720 tensors; the drafter's 768 are IQ2_XXS):
+
+```text
+Maya-XS/maya-ds4 (v1):       gate/up IQ1_S 30,720, IQ2_XXS 768; down IQ1_S 15,360, IQ2_XXS 384
+Maya-XS-v2/maya-ds4-v2:      gate/up IQ1_S 30,720, IQ2_XXS 768; down IQ1_S 10,752, IQ2_XXS 4,992
+Maya-XS-hybrid:              gate/up IQ1_S 30,720, IQ2_XXS 768; down IQ1_S 15,360, IQ2_XXS 384
+Maya-S:                      only 4 of 6 shards present, IQ2_XXS (higher bits than IQ1_S)
+```
+
+IQ1_S (50 bytes / 256 values = 1.5625 bpw) is already the lowest type the engine has kernels for; a lower gate/up
+needs a new quant type and the pre-quant weights, which are not in the packs.  The 116 GB of the 13K gate/up
+stream is at that floor.
+
+A whole-layer ring was the last scheduling idea: `DS4_RING_MB=2500`, hybrid 13K:
+
+```text
+prefill 17.98 s = 726.4 tok/s, experts 9.17 s (ring 400: 17.75 s, experts ~9.5)
+VRAM experts 2,727 + 2,343 = 5,070 (ring 400: 5,900), stream 26,034 experts a device
+```
+
+The deeper ring cut the expert stage by ~0.35 s but lost 830 experts, adding 1,660 expert streams and ~3.3 GB of
+gate/up a device; the total was slightly worse.  Combined with the earlier ring 800 / kParts 8 / early copy_ahead
+/ flow tests, the copy pipeline is at its scheduling limit for this quant and 44 GB of VRAM.
