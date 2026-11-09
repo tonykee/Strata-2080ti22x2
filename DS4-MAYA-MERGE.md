@@ -1191,3 +1191,21 @@ so part of the gain is content, not only engine time; Maya's production config u
 The next load of the same boot fell to warm-up 549.9 and the same 6-turn to 16.7-29.3, so a stable 30-40 claim
 needs a clean boot; and the code turns need the AR/wait path (the cold decode profile: ar2 35.6%, expert-copy
 wait 24.1%, wait_seq 8.6%) or a grouped expert GEMM, not another config.
+
+## Maya's batched compressor rollback ported: +7.3% decode, exact (2026-11-10)
+
+The decode's rejected drafts roll the compressors back.  Strata did it per layer and member: two D2D copies and a
+`compress_win` launch each; Maya's `CompBatch`/`comp_restore_batch` does one launch a device.  Ported behind
+`DS4_ROLLBACK_BATCH=1` (the state is the same; the pools' latent rows are written again when the positions come).
+
+13K prompt, 64 decoded tokens, same state (prompt 17.81 against 17.76 s), the same greedy tokens:
+
+```text
+per layer/member (old): 64 tokens in 1713 ms = 36.78 tok/s, verify 1490.4 ms
+one launch a device:    64 tokens in 1597 ms = 39.45 tok/s, verify 1377.6 ms   (+7.3%)
+```
+
+The 6-turn with the fastdec config plus it (warm-up 796): 35.0 / 30.5 / 24.6 / 25.9 / 23.1 / 24.9 tok/s - the
+first two turns above 30, the code-heavy ones still 23-26 (their draft acceptance is ~2.3 tokens a round against
+4.3 for the MoE/repetitive answers).  Enabled in the hybrid, fastdec and v2 tuned configs; the code default
+stays off.

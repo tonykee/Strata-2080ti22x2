@@ -12004,6 +12004,43 @@ struct Model::Impl {
                 cudaSetDevice(devs[di].id);
                 ring_restore_batch(rb[di], p0, g.win, keep, T, g.hd, devs[di].st);
             }
+        // DS4_ROLLBACK_BATCH=1: the compressors' state one launch a device (Maya's comp_restore_batch) instead of two
+        // copies and a compress_win launch a layer and member; the state is the same, the pools' latent rows are left
+        // out (they are written again when the positions come).  Off by default until measured.
+        static const bool roll_batch = [] {
+            const char* v = std::getenv("DS4_ROLLBACK_BATCH");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
+        if (roll_batch) {
+            std::vector<CompBatch> cb(devs.size());
+            for (int il = 0; il < g.nl; ++il)
+                for (int m = 0; m < L[(size_t) il].nm; ++m) {
+                    Layer& l = member(L[(size_t) il], m);
+                    Dev& d = devs[(size_t) l.dev];
+                    if (l.c_snap == nullptr) continue;
+                    CompBatch& b = cb[(size_t) l.dev];
+                    if (b.n == kMaxRingBatch) {   // (more than a batch takes: this one alone)
+                        cudaSetDevice(d.id);
+                        const size_t ns = (size_t) l.ratio * g.hd * 4;
+                        cudaMemcpyAsync(l.c_kv, l.c_snap, ns, cudaMemcpyDeviceToDevice, d.st);
+                        cudaMemcpyAsync(l.c_score, l.c_snap + (size_t) l.ratio * g.hd, ns, cudaMemcpyDeviceToDevice, d.st);
+                        compress_win(l.c_rows, l.c_rows + (size_t) kWin * g.hd, l.c_kv, l.c_score, l.ratio, (int) p0, keep,
+                                     g.hd, l.c_norm, g.eps, d.latent, d.st);
+                        continue;
+                    }
+                    b.kv_state[b.n] = l.c_kv;
+                    b.score_state[b.n] = l.c_score;
+                    b.snap[b.n] = l.c_snap;
+                    b.kv[b.n] = l.c_rows;
+                    b.score[b.n] = l.c_rows + (size_t) kWin * g.hd;
+                    b.ratio[b.n++] = l.ratio;
+                }
+            for (size_t di = 0; di < devs.size(); ++di)
+                if (cb[di].n > 0) {
+                    cudaSetDevice(devs[di].id);
+                    comp_restore_batch(cb[di], p0, keep, g.hd, devs[di].st);
+                }
+        } else
         for (int il = 0; il < g.nl; ++il)
             for (int m = 0; m < L[(size_t) il].nm; ++m) {
                 Layer& l = member(L[(size_t) il], m);

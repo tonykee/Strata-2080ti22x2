@@ -1436,6 +1436,21 @@ __global__ void ring_restore_kernel(uint8_t* __restrict__ ring, const uint8_t* _
     uint8_t* row = ring + (size_t) ((p0 + t) % n) * rb;
     for (size_t i = threadIdx.x; i < rb; i += blockDim.x) row[i] = backup[(size_t) t * rb + i];
 }
+__global__ void comp_restore_batch_kernel(const CompBatch b, long long p0, int keep, int d) {
+    const int li = blockIdx.x, R = b.ratio[li];
+    for (int i = threadIdx.x; i < R * d; i += blockDim.x) {
+        const int slot = i / d, e = i % d;
+        float kv = b.snap[li][i], sc = b.snap[li][(size_t) R * d + i];   // (the last kept row at the slot, else the snapshot)
+        for (int t = 0; t < keep; ++t)
+            if ((int) ((p0 + t) % R) == slot) {
+                kv = b.kv[li][(size_t) t * d + e];
+                sc = b.score[li][(size_t) t * d + e];
+            }
+        b.kv_state[li][i] = kv;
+        b.score_state[li][i] = sc;
+    }
+}
+
 __global__ void ring_restore_batch_kernel(const RingBatch b, long long p0, int n, int keep, size_t rb) {
     const int t = keep + blockIdx.x, li = blockIdx.y;
     uint8_t* row = b.ring[li] + (size_t) ((p0 + t) % n) * rb;
@@ -3305,6 +3320,10 @@ void ring_restore(uint8_t* ring, const uint8_t* backup, int64_t p0, int n, int k
     if (T > keep)
         strata_ds4_launch(ring_restore_kernel, T - keep, kThreads, 0, s, ring, backup, (long long) p0, n, keep, kv_row_bytes(kKvFp8, d));
 }
+void comp_restore_batch(const CompBatch& b, int64_t p0, int keep, int d, cudaStream_t s) {
+    if (b.n > 0) strata_ds4_launch(comp_restore_batch_kernel, b.n, kThreads, 0, s, b, (long long) p0, keep, d);
+}
+
 void ring_restore_batch(const RingBatch& b, int64_t p0, int n, int keep, int T, int d, cudaStream_t s) {
 #if defined(STRATA_METAL)
     {
