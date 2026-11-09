@@ -925,3 +925,22 @@ batch 37.0 (6,892 ms), so the 17.4 on the Python prompts is not a serve-path cos
 same 26-token Python prompt decoded **10.7 tok/s cold and 37.4 tok/s warm** (fourth read), with the draft
 positions 1-5 at 83-100%: the 40+ decode needs the expert cache warm on that content, exactly Maya's
 `vram_hit 0.93-0.99` condition.
+
+## Short-prompt transfers: skip the experts a chunk does not pick (2026-11-09)
+
+Maya's CUDA default is `DS4_SKIP_UNPICKED_ROWS=1536` (a chunk up to that many rows copies only the experts some
+row picked); Strata defaulted to 0 (every chunk copies every CPU-lane expert).  Set to **2048** so a 1.6K
+agent turn skips, while the 6.6K/13K chunks keep the full-copy path that overlaps better:
+
+```text
+same degraded state (warm-up 10.7K 543 tok/s both), bench:
+  1,615 tokens: 9.21 s = 175.0 tok/s   without
+                4.08 s = 396.1 tok/s   with 2048   (2.3x)
+  6,564 tokens: 652.6 against 654.5    (unchanged)
+ 13,160 tokens: 645.5 against 649.8    (unchanged)
+warm-up 1.3K:  116.6/117.8 tok/s      without
+                208.4/222.8 tok/s      with
+```
+
+Placement/order of the copied experts is unchanged, so the outputs are the same; the copy of an expert no row
+of the chunk picked is simply not issued.  Written into the hybrid and v2 tuned configs.
