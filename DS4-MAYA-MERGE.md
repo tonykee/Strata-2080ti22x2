@@ -1102,3 +1102,31 @@ v7 stay as they are.  Config-level work is exhausted; the remaining 13K gap need
 (Maya's fast path runs `sparse_attn_packed<int 8>`, 8-token packed windows) or a fused GEMM/AR, both kernel
 projects rather than settings.  The slab AR + block-count code is kept as an opt-in experiment
 (`DS4_AR_SLAB=1`, `DS4_PEER_AR_BLOCKS`), default off.
+
+## The packed attention kernel is not the answer (2026-11-09)
+
+Strata already carried `sparse_attn_packed_kernel` (ds4_kernels.cu ~1101) unused: the host's v7 branch intercepts
+the prompt path.  Forcing the packed fallback with `DS4_ATTN_PACKED=1` on the 13K prompt:
+
+```text
+v7 (DS4_ATTN_V7=1, the default):  13,058 in 17.76 s = 735.2 tok/s
+packed (DS4_ATTN_PACKED=1):       13,058 in 21.05 s = 620.4 tok/s  (-16%)
+```
+
+The tokens differ (v7 sums on the tensor cores, packed on the scalar lanes).  Maya's fast path shows
+`sparse_attn_packed<8>` because its v7 branch is not taken there; on this hardware Strata's v7 is the faster
+kernel, so there is nothing to port.
+
+The 13K memcpy summary (same trace) closes the picture:
+
+```text
+H2D   19.69 s total, 162,662 copies  (~9.85 s a device, 8.5 GB/s against a 12.2 GB/s link)
+D2H    0.26 s
+D2D    0.0004 s (the VRAM-resident experts are used in place)
+kernels 30.4 s total = 15.2 s a device; wall 17.94 s -> ~2.7 s of copies not overlapped (the earlier waits)
+```
+
+So the remaining ~20% is split between the GPU kernels (attention already the fastest variant, cuBLAS ~19.4%,
+router/index ~10%) and the H2D stream running at ~70% of the link with ~2.7 s unhidden.  Config toggles, the
+packed kernel, the AR variants and the ring/part changes are all measured and do not move it.  The next real
+lever is a lower-bit gate/up pack (fewer bytes) or a deeper copy/kernel redesign, not a setting or a port.

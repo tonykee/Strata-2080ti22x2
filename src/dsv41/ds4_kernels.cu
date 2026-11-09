@@ -3207,8 +3207,14 @@ void sparse_attn(const float* q, const uint16_t* win, const void* ckv, const int
                                                                        sink, heads, d, scale, out);
         return;
     }
+    // DS4_ATTN_PACKED=1: the chunked prompt's packed-KV scalar kernel (the fallback below) instead of v7 - an A/B
+    // for the prefill; the two kernels' sums are not bit-identical (v7 is WMMA order), so the answers can differ.
+    static const bool packed_env = [] {
+        const char* v = std::getenv("DS4_ATTN_PACKED");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
 #if !defined(STRATA_USE_HIP)
-    if ((a.gen || attn_v7_decode()) && a.kcap + a.win <= kV7Max && heads % 16 == 0 && attn_v7_now()) {
+    if (!packed_env && (a.gen || attn_v7_decode()) && a.kcap + a.win <= kV7Max && heads % 16 == 0 && attn_v7_now()) {
         strata_ds4_launch(sparse_attn_v7_kernel, dim3(heads / 16, T), kV7Threads, kV7Smem, s, q, win,
                           (const uint8_t*) ckv, sel, sel_stride, a, sink, heads, scale, out);
         return;
