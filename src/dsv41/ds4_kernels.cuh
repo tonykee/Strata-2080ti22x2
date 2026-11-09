@@ -245,6 +245,27 @@ struct CacheSub {
 };
 /// route() for the T tokens of a window, plus: plan_ptr[t][i] = vram[idx[t][i]] (0: not on the device), each token's x
 /// (dim floats) and picks into the request slot, then T and seq (req null: no request, the plan alone).
+// DS4_ROUTE_FUSE: route_publish's selection and route_ahead's picks in one launch (the two bodies, block 0 and 1)
+struct RoutePair {
+    const float *logits = nullptr, *bias = nullptr;
+    int n = 0, k = 0;
+    float route_scale = 1.0f;
+    const unsigned long long* vram = nullptr;
+    const float* x = nullptr;
+    int dim = 0;
+    int* idx = nullptr;
+    float* w = nullptr;
+    unsigned long long* plan_ptr = nullptr;
+    Req* req = nullptr;
+    const float* bias_vl = nullptr;
+    unsigned vl = 0;
+    unsigned seq = 0;
+    int na0 = 0, na1 = 0;
+    const float *a_logits = nullptr, *a_bias = nullptr;
+    int a_n = 0, m = 0, off = 0;
+    int T = 1;
+};
+bool route_pair(const RoutePair& a, cudaStream_t s);
 void route_publish(const float* logits, const float* bias, int n, int k, int T, float route_scale,
                    const unsigned long long* vram, const float* x, int dim, int* idx, float* w,
                    unsigned long long* plan_ptr, Req* req, unsigned seq, cudaStream_t s, const float* bias_vl = nullptr,

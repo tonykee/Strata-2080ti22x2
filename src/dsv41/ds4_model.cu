@@ -14787,8 +14787,12 @@ struct Model::Impl {
                 const char* e = std::getenv("DS4_ROUTE_FUSE");
                 return e == nullptr || std::atoi(e) != 0;
             }();
-            const bool pair1 = route_fuse_on && nx1 != nullptr && T <= kWin && l.n_exp <= 1024 && nx1->n_exp <= 1024 &&
-                               l.gate_w != nullptr && nx1->gate_w != nullptr;
+            const bool pair1 = route_fuse_on && ahead_mode >= 1 && nx1 != nullptr && T <= kWin && l.n_exp <= 1024 &&
+                               nx1->n_exp <= 1024 && l.gate_w != nullptr && nx1->gate_w != nullptr;
+            const bool subst = substitution.ratio > 0 && T <= 16 && !l.mtp;
+            const bool route_pair1 = pair1 && !subst;   // (the fused pair has route_publish_kernel's body, not the sub one)
+            int m1 = 0;
+            float* gl1 = nullptr;
             if (pair1)
                 gemv_f32_pair(l.gate_w, l.n_exp, d.glog, nx1->gate_w, nx1->n_exp, d.glog_a, d.x, D, T, nullptr, 1024, s);
             else
@@ -14801,17 +14805,51 @@ struct Model::Impl {
                 if (!(a == 1 && pair1))
                     gemv_f32(nx->gate_w, d.x, nx->n_exp, D, T, gl, 1024, s);   // (normed with the next layer's FFN
                                                                              // weights instead: the same hit rate)
-                route_ahead(gl, nx->gate_bias, nx->n_exp, m, T, reqs + slot, (a - 1) * kAhead1, s);
+                if (a == 1 && route_pair1) {
+                    m1 = m;
+                    gl1 = gl;   // the fused route_pair does this lookahead with the publish
+                } else
+                    route_ahead(gl, nx->gate_bias, nx->n_exp, m, T, reqs + slot, (a - 1) * kAhead1, s);
                 na[a - 1] = m;
             }
             CacheSub sub;
             const CacheSub* substitute = nullptr;
-            if (substitution.ratio > 0 && T <= 16 && !l.mtp) {
+            if (subst) {
                 sub.ratio = substitution.ratio;
                 sub.budget = substitution.budget;
                 sub.candidates = substitution.candidates;
                 substitute = &sub;
             }
+            if (route_pair1 && m1 > 0 && gl1 != nullptr) {
+                RoutePair rp;
+                rp.logits = d.glog;
+                rp.bias = l.gate_bias;
+                rp.n = l.n_exp;
+                rp.k = l.k_exp;
+                rp.route_scale = g.route_scale;
+                rp.vram = l.vram_tab;
+                rp.x = d.x;
+                rp.dim = D;
+                rp.idx = d.ridx;
+                rp.w = d.rw;
+                rp.plan_ptr = d.plan_ptr;
+                rp.req = reqs + slot;
+                rp.bias_vl = l.gate_bias_vl;
+                rp.vl = l.mtp ? 0u : wp.vl;
+                rp.seq = sq;
+                rp.na0 = m1;
+                rp.na1 = na[1];
+                rp.a_logits = gl1;
+                rp.a_bias = nx1->gate_bias;
+                rp.a_n = nx1->n_exp;
+                rp.m = m1;
+                rp.off = 0;
+                rp.T = T;
+                if (!route_pair(rp, s)) {
+                    err = "route_pair: launch failed";
+                    return false;
+                }
+            } else
             route_publish(d.glog, l.gate_bias, l.n_exp, l.k_exp, T, g.route_scale, l.vram_tab, d.x, D, d.ridx, d.rw,
                           d.plan_ptr, lead ? reqs + slot : nullptr, sq, s, l.gate_bias_vl, l.mtp ? 0u : wp.vl, na[0],
                           na[1], substitute);

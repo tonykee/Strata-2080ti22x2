@@ -774,3 +774,20 @@ on:  decode 26.50 tok/s, layers 10.57 ms/token; tokens identical
 The routing/guess kernels (`route_pair`) are not ported yet: Strata's route_publish carries the plan pointer,
 the VL bits and the cache-substitution argument, and the fused kernel would have to reproduce that state.  The
 gate pair alone is a small exact gain (~0.8%).
+
+## DS4_ROUTE_FUSE: route_pair ported (2026-11-09)
+
+The second half: `route_pair_kernel` (block 0 route_publish_kernel's selection, block 1 route_ahead_kernel's
+picks, row blockIdx.y) plus the `RoutePair` struct and the `publish_kernel` follow-up.  It is used only when
+the cache-substitution router is off (the fused block has the exact publish body); otherwise the two launches
+stay.  Hybrid 13K, pump + gate pair + route pair, same state:
+
+```text
+prefill 17.64 s = 740.1 tok/s   (best measured)
+decode 28.00 tok/s, layers 10.65 ms/token
+tokens identical: 455,2502,344,260,1606,...
+```
+
+The route pair removes one more launch a layer; the decode's per-token time is set by the CPU lane/expert
+tail, so the gain is within run-to-run noise.  `DS4_ROUTE_FUSE=1` (default) enables the gate pair and the route
+pair; `0` disables both.

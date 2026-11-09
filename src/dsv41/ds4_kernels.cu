@@ -1876,6 +1876,108 @@ __global__ void __launch_bounds__(512) route_ahead_kernel(const float* __restric
     }
 }
 
+// DS4_ROUTE_FUSE: route_publish_kernel (block 0) and route_ahead_kernel (block 1) as the two blocks of one launch,
+// row t = blockIdx.y; the bodies are the single kernels' code, so the picks and weights are their bits
+__global__ void __launch_bounds__(512) route_pair_kernel(const RoutePair a) {
+    __shared__ float sc[1024], bs[1024];
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    __shared__ int pick[16];
+    __shared__ int on_cpu;
+    const int t = blockIdx.y;
+    if (blockIdx.x == 0) {
+        const int n = a.n, k = a.k;
+        const float* logits = a.logits + (size_t) t * 1024;
+        const float* bias = a.bias;
+        if (a.bias_vl != nullptr && ((a.vl >> t) & 1u)) bias = a.bias_vl;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) {
+            const float l = logits[i];
+            const float sp = l > 20.0f ? l : log1pf(expf(l));
+            sc[i] = sqrtf(sp);
+            bs[i] = sc[i] + bias[i];
+        }
+        __syncthreads();
+        const int lane = threadIdx.x & 31, wp = threadIdx.x >> 5;
+        for (int r = 0; r < k; ++r) {
+            float best = -FLT_MAX;
+            int bix = 0x7fffffff;
+            for (int i = threadIdx.x; i < n; i += blockDim.x)
+                if (bs[i] > best || (bs[i] == best && i < bix)) best = bs[i], bix = i;
+            for (int o = 16; o > 0; o >>= 1) {
+                const float ov = __shfl_xor_sync(0xffffffffu, best, o);
+                const int oi = __shfl_xor_sync(0xffffffffu, bix, o);
+                if (ov > best || (ov == best && oi < bix)) best = ov, bix = oi;
+            }
+            if (lane == 0) bv[wp] = best, bi[wp] = bix;
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                float b = -FLT_MAX;
+                int ix = 0x7fffffff;
+                for (int q = 0; q < (int) (blockDim.x >> 5); ++q)
+                    if (bv[q] > b || (bv[q] == b && bi[q] < ix)) b = bv[q], ix = bi[q];
+                if (ix >= n) ix = route_fallback_pick(pick, r, n);
+                pick[r] = ix;
+                bs[ix] = -FLT_MAX;
+            }
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            float s = 0.0f;
+            for (int r = 0; r < k; ++r) s += sc[pick[r]];
+            int cpu = 0;
+            for (int r = 0; r < k; ++r) {
+                const float wv = sc[pick[r]] / (s + 1e-20f) * a.route_scale;
+                a.idx[(size_t) t * kPicks + r] = pick[r];
+                a.w[(size_t) t * kPicks + r] = wv;
+                a.plan_ptr[(size_t) t * kPicks + r] = a.vram[pick[r]];
+                cpu |= a.vram[pick[r]] == 0ull;
+                if (a.req != nullptr) {
+                    a.req->ids[t][r] = pick[r];
+                    a.req->w[t][r] = wv;
+                }
+            }
+            on_cpu = cpu;
+        }
+        __syncthreads();
+        if (a.req != nullptr && on_cpu)
+            for (int i = threadIdx.x; i < a.dim; i += blockDim.x) a.req->x[t][i] = a.x[(size_t) t * a.dim + i];
+        return;
+    }
+    const int n = a.a_n, m = a.m, off = a.off;
+    const float* logits = a.a_logits + (size_t) t * 1024;
+    const float* bias = a.a_bias;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float l = logits[i];
+        const float sp = l > 20.0f ? l : log1pf(expf(l));
+        bs[i] = sqrtf(sp) + bias[i];
+    }
+    __syncthreads();
+    const int lane = threadIdx.x & 31, wp = threadIdx.x >> 5;
+    for (int r = 0; r < m; ++r) {
+        float best = -FLT_MAX;
+        int bix = 0x7fffffff;
+        for (int i = threadIdx.x; i < n; i += blockDim.x)
+            if (bs[i] > best || (bs[i] == best && i < bix)) best = bs[i], bix = i;
+        for (int o = 16; o > 0; o >>= 1) {
+            const float ov = __shfl_xor_sync(0xffffffffu, best, o);
+            const int oi = __shfl_xor_sync(0xffffffffu, bix, o);
+            if (ov > best || (ov == best && oi < bix)) best = ov, bix = oi;
+        }
+        if (lane == 0) bv[wp] = best, bi[wp] = bix;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            float b = -FLT_MAX;
+            int ix = 0x7fffffff;
+            for (int q = 0; q < (int) (blockDim.x >> 5); ++q)
+                if (bv[q] > b || (bv[q] == b && bi[q] < ix)) b = bv[q], ix = bi[q];
+            a.req->ahead[t][off + r] = ix < n ? ix : -1;
+            if (ix < n) bs[ix] = -FLT_MAX;
+        }
+        __syncthreads();
+    }
+}
+
+
 __global__ void publish_kernel(Req* req, int T, unsigned seq, int na0, int na1) {
     __threadfence_system();
     req->na[0] = na0;
@@ -2450,6 +2552,17 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
     if (req != nullptr && m > 0 && T > 0 && n <= 1024 && off + m <= kAhead)
         strata_ds4_launch(route_ahead_kernel, T, 512, 0, s, logits, bias, n, m, req, off);
 }
+
+bool route_pair(const RoutePair& a, cudaStream_t s) {
+    if (a.req == nullptr || a.n < 1 || a.n > 1024 || a.k < 1 || a.k > kPicks || a.a_n < 1 || a.a_n > 1024 ||
+        a.m < 1 || a.off < 0 || a.off + a.m > kAhead || a.dim < 1 || a.T < 1 || a.T > kWin)
+        return false;
+    route_pair_kernel<<<dim3(2, (unsigned) a.T), 512, 0, s>>>(a);
+    if (cudaGetLastError() != cudaSuccess) return false;
+    publish_kernel<<<1, 1, 0, s>>>(a.req, a.T, a.seq, a.na0, a.na1);
+    return cudaGetLastError() == cudaSuccess;
+}
+
 bool router_nonfinite_take(cudaStream_t s) {
 #if defined(STRATA_METAL)
     // the MSL router kernels raise a flag in a buffer of the Metal host (ds4_route_fallback_pick); the stream's work is done first
