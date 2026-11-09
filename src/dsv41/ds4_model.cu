@@ -758,7 +758,9 @@ struct Chunk {
     cudaEvent_t emb_ev[2] = {nullptr, nullptr}, eg_ev[2] = {nullptr, nullptr};
     double stream_bytes = 0;
     double stream_gu = 0, stream_down = 0;   // (DS4_PROF: the member's gate/up and down bytes actually DMA'd)
-    long long stream_experts = 0;     // the experts streamed in, in all
+    long long stream_experts = 0;
+    double host_layer_ms = 0;   // (DS4_PROF: the host's time in the chunk path's layers, syncs included)
+    double sync_ms = 0;         // (DS4_PROF: the prompt's cudaStreamSynchronize waits, a subset of host_layer_ms)     // the experts streamed in, in all
     // the flow (a GGUF's in-place experts, every layer of the device on it alone; DS4_FLOW=0: the batches above): a
     // (chunk, layer)'s streamed experts are those it routes to - its likely ones (the profile's chance of a pick by the
     // chunk's tokens) queued once the layer before it routed, read while that one computes, the rest of its picks once
@@ -4582,23 +4584,38 @@ struct Model::Impl {
         static const bool pf = strata::ds4::dense_pfgemm_default(env_tri("STRATA_DENSE_PFGEMM"), defaults_026());
 #endif
         const int cols = std::max(128, (int) std::min<size_t>((size_t) m.n, c.w16_elems / (size_t) m.k) / 128 * 128);
+        static const bool gp = std::getenv("DS4_GEMM_PROF") != nullptr;
+        const bool gpq = gp && m.k == g.q_lora && m.n == c.HQ;   // (the attention wq_b's GEMM)
+        cudaEvent_t e0 = nullptr, e1 = nullptr, e2 = nullptr;
+        double rec_ms = 0, blas_ms = 0;
+        if (gpq) {
+            cudaEventCreate(&e0); cudaEventCreate(&e1); cudaEventCreate(&e2);
+        }
         for (int c0 = 0; c0 < m.n; c0 += cols) {
             const int nc = std::min(cols, m.n - c0);
+            if (gpq) cudaEventRecord(e0, d.st);
             if (m.fmt != 0) gg::rows(nc == m.n ? m : gg::view(m, c0, nc), c.w16, false, d.st);   // (a GGUF's)
             else x3::reconstruct_rows(nc == m.n ? m : x3::view(m, c0, nc), c.w16, false, d.st);
+            if (gpq) { cudaEventRecord(e1, d.st); cudaEventSynchronize(e1); float ms = 0; cudaEventElapsedTime(&ms, e0, e1); rec_ms += ms; }
 #if defined(STRATA_USE_HIP)
             if (pf && rows >= 64 && ((uintptr_t) x16 & 15u) == 0 &&
                 strata_pf_gemm_f16_ld(x16, ldx, c.w16, m.k, y + c0, rows, nc, m.k, ldy, beta, d.st))
                 continue;
 #endif
+            if (gpq) cudaEventRecord(e1, d.st);
             const float one = 1.0f;
             const cublasStatus_t st = cublasGemmEx(c.blas, CUBLAS_OP_T, CUBLAS_OP_N, nc, rows, m.k, &one, c.w16, CUDA_R_16F,
                                                    m.k, x16, CUDA_R_16F, ldx, &beta, y + c0, CUDA_R_32F, ldy,
                                                    CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+            if (gpq) { cudaEventRecord(e2, d.st); cudaEventSynchronize(e2); float ms = 0; cudaEventElapsedTime(&ms, e1, e2); blas_ms += ms; }
             if (st != CUBLAS_STATUS_SUCCESS) {
                 err = "cublasGemmEx: status " + std::to_string((int) st);
                 return false;
             }
+        }
+        if (gpq) {
+            std::fprintf(stderr, "ds4 gemm wq_b n=%d k=%d rows=%d: recon %.2f ms, cublas %.2f ms\n", m.n, m.k, rows, rec_ms, blas_ms);
+            cudaEventDestroy(e0); cudaEventDestroy(e1); cudaEventDestroy(e2);
         }
         return true;
     }
@@ -12299,7 +12316,9 @@ struct Model::Impl {
                 if (!flow_pump(c, err)) return false;
                 std::this_thread::yield();
             }
+        const double ts = now_ms();
         CK(cudaStreamSynchronize(s));
+        c.sync_ms += now_ms() - ts;
         std::vector<int> b(c.bounds_pin, c.bounds_pin + n_vs + 1);
         if (dump_r != nullptr && mi == 0) {
             const size_t nk = (size_t) T * l.k_exp, np = (size_t) T * kPicks;
@@ -12865,7 +12884,9 @@ struct Model::Impl {
                                              (size_t) nr, cudaMemcpyDeviceToHost, s));
                     }
                 }
+                const double th0 = now_ms();
                 if (!run_layer(L0, mi, p0, T, wp, S, err, run, k, il)) return false;
+                c.host_layer_ms += now_ms() - th0;
                 if (dump_l != nullptr && mi == 0) dump_layer(d, c.h, il, p0, T);
                 const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
                 if (last && mi == 0 && il + 1 < g.nl) {   // the hand-off, once the next group took the chunk before last
@@ -13729,11 +13750,16 @@ struct Model::Impl {
                          "(with the waits for streamed ones), between layers %.0f ms\n",
                          n, cprof_ms[1], cprof_ms[2], cprof_ms[3], cprof_ms[0]);
             for (size_t di = 0; di < devs.size() && di < chunks.size(); ++di)
-                if (chunks[di] != nullptr)
+                if (chunks[di] != nullptr) {
                     std::fprintf(stderr, "ds4 prefill streams CUDA%d: %lld experts, gate/up %.2f GB, down %.2f GB (%.2f MB down each)\n",
                                  devs[di].id, chunks[di]->stream_experts, chunks[di]->stream_gu / 1e9,
                                  chunks[di]->stream_down / 1e9,
                                  chunks[di]->stream_down / 1e6 / (double) std::max<long long>(1, chunks[di]->stream_experts));
+                    std::fprintf(stderr, "ds4 prefill host CUDA%d: layers %.0f ms, of it sync %.0f ms\n", devs[di].id,
+                                 chunks[di]->host_layer_ms, chunks[di]->sync_ms);
+                    chunks[di]->host_layer_ms = 0;
+                    chunks[di]->sync_ms = 0;
+                }
             {   // the finer table (ms, % of the sum)
                 static const char* nm_[16] = {"between layers", "attn rest (q_b, wo_a/b, hc_post)", "shared expert", "experts (incl waits)",
                                               "engram", "attn mHC (mix/split/norm)", "attn projections", "compressor + indexer",

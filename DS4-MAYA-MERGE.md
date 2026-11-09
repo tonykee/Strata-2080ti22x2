@@ -811,3 +811,26 @@ the greedy answer differs); the earlier 48.0 and 53.0 warm peaks were other answ
 stable metric: the clean boot adds 2.6%, and the remaining gap to 1000 (24%) is the IQ1_S gate/up stream and
 the 44 GB of VRAM, not host state.  The pool is kept reserved for the next start; stop with `--release` only
 when another model needs the RAM.
+
+## Same-boot A/B: Maya 1018 against Strata 759.6 (2026-11-09)
+
+Fresh boot, the huge-page pool reserved once and kept:
+
+```text
+Strata (hybrid + pump + route fuse): 13K 17.19 s = 759.6 tok/s
+Maya v1 (same pool, then started):    warmup 10685 tokens 1000.2 tok/s
+                                      clean-v1 13162 tokens 12.93 s = 1018.1 tok/s; decode 45.5
+```
+
+So the gap is real code/configuration, not host state.  Checked:
+
+- cache substitution (Maya's 0.1): 580.5 against 579.1 without it - prefill neutral (it changes the decode's
+  CPU lane, not the prompt's expert set).
+- q_b's GEMM: `DS4_GEMM_PROF` shows reconstruct 0.16 ms, cuBLAS 1.4-1.8 ms a slab, ~80 ms a device a prompt.
+  The 3.45 s "q_b + rope" stage is the profiler's marks inside the slab loop, not the GEMM.
+- host time: `host_layer_ms` 15.5 s, of it `sync_ms` 14.3 s - the main thread is only ~1.2 s of CPU; the
+  prompt is GPU-stream-bound, not host-enqueue-bound.
+- ring 2500 + pump: host 15.6 s, 733.8 tok/s - the deeper ring did not move the sync.
+
+The remaining 4.3 s is in the GPU stream's per-layer work (attention ~7.5 s a device, expert copy waits,
+2.2 s of all-reduces); the profiler's per-stage sum is not a trustworthy attribution there.
