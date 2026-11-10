@@ -93,6 +93,20 @@ cd /home/likan/strata-latest
 ./stop.sh                 # stops this branch only, not ~/strata
 ```
 
+For the 256 GB / 2DPC box, the huge-page wrapper reserves a 2 MB pool before the server and
+releases it on exit:
+
+```bash
+./start_swift_2mb_cache.sh --batch2   # batch 2 (concurrency), 96 GB pool; releases on Ctrl+C
+./start_swift_2mb_cache.sh --single   # batch off, fastest single stream
+HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh --batch2   # 48 GB is enough; asks for sudo
+./start_swift_2mb_cache.sh --check    # reserve, print, release; does not start a server
+./stop_swift_2mb_cache.sh             # only if the start script was killed with SIGKILL
+```
+
+The wrapper refuses to start when port 8000 or another `strata` engine is already in use.  It
+releases only a pool it reserved; a pool reserved by DS4 or by hand is left alone.
+
 The start scripts refuse to run when port 8000 is already in use, so stop the production tree
 (`/home/likan/strata/stop.sh`) first if it is running.
 
