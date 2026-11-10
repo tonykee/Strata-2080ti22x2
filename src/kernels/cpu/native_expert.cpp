@@ -592,6 +592,11 @@ void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const voi
     native_gu_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, act, nt, ff, r0, r1);
 }
 
+void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                                float* const* out, int r0, int r1) {
+    native_down_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, hq, nt, out, r0, r1);
+}
+
 void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const uint8_t* up_base,
                           const void* const* act, int nt, float* const* ff, int r0, int r1,
                           float swiglu_limit) {
