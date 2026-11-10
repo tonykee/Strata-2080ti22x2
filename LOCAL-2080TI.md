@@ -98,3 +98,19 @@ The start scripts refuse to run when port 8000 is already in use, so stop the pr
 
 Do not switch `~/strata`'s production config to this engine until the image path and the full
 SC117/Swift conversation tests have run.
+
+## Swift on 256 GB (2026-11-10)
+
+The 256 GB 8x32 GB 2DPC upgrade costs Swift prefill about 16-18% against the 128 GB 4x32 GB 1DPC
+record (50K 2,182.7 -> 1,813.7, 100K 2,378.9 -> 1,977.9 tok/s).  The same-config 0.1.45 control on
+256 GB is 1,826.9/1,996.8, so this is the memory state, not the 0.1.57 code (0.1.57 decode is 3-4%
+above 0.1.45 at 50K/100K).
+
+2 MB hugepages for the expert arena, `--vram-reserve-mib 700` and `--batch 1` recover about 7-9%
+(50K 1,934-1,979, 100K 2,111-2,133) and raise 100K decode to 131-134 tok/s.  `--prefill 4096`,
+`--pool-workers 12`, removing `STRATA_EXP_MODE=8`/`STRATA_PW_WITH_BATCH`, and `--pipeline-windows 0`
+all made it worse.  Full numbers, the rejected settings and the harness:
+[bench/results/2026-11-10-swift-2dpc-prefill/README.md](bench/results/2026-11-10-swift-2dpc-prefill/README.md).
+The remaining 9-11% needs 1DPC (or a future 1 GB-page/PLE-hugepage experiment); the BIOS has no
+rank-interleaving or command-rate setting.
+
