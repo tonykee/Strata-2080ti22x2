@@ -6494,12 +6494,21 @@ struct Model::Impl {
         // 0.2.7: DS4_COPY_HUGETLB unset = ON when the reserved pool already holds the whole copy (HugePages_Free), else the
         // ordinary arena exactly as before; =0 is the off switch, =1 asks for it anyway (a smaller pool is used, the rest warns).
         const uint64_t pool_free = os::huge_free_bytes();
-        const bool huge_arena = strata::ds4::copy_hugetlb_default(env_tri("DS4_COPY_HUGETLB"), (double) pool_free, all, defaults_026());
-        if (huge_arena && std::getenv("DS4_COPY_HUGETLB") == nullptr)
+        const uint64_t pool1g = os::huge_free_bytes_1g();
+        // DS4_COPY_HUGE_1G=1 (or unset with the 1 GB pool holding 1.6x the copy, the per-layer 1 GB rounding):
+        // the arena on 1 GB pages - 43,000 2 MB pages become ~130 TLB entries on a 4-rank DDR3 arena.
+        const bool huge1 = env_tri("DS4_COPY_HUGE_1G") > 0 ||
+                           (env_tri("DS4_COPY_HUGE_1G") < 0 && env_tri("DS4_COPY_HUGETLB") < 0 && pool1g > 0 &&
+                            (double) pool1g >= all * 1.6);
+        const bool huge_arena = huge1 || strata::ds4::copy_hugetlb_default(env_tri("DS4_COPY_HUGETLB"), (double) pool_free, all, defaults_026());
+        if (huge1)
+            std::fprintf(stderr, "ds4: the 1 GB huge-page pool (%.1f GB free, %.0f GB copy): the arena on 1 GB pages\n",
+                         (double) pool1g / 1e9, all / 1e9);
+        else if (huge_arena && std::getenv("DS4_COPY_HUGETLB") == nullptr)
             std::fprintf(stderr, "ds4: the reserved huge-page pool (%.1f GB free) holds the whole copy (%.1f GB): the arena on 2 MB pages "
                                  "(DS4_COPY_HUGETLB=0 keeps the ordinary arena)\n", (double) pool_free / 1e9, all / 1e9);
         bool arena_all_huge = huge_arena;   // (every chunk really from the pool: the pin below needs that)
-        const double pool = huge_arena ? (double) pool_free : 0.0;
+        const double pool = huge1 ? (double) pool1g : (huge_arena ? (double) pool_free : 0.0);
         const double can = std::min(avail == ~uint64_t{0} ? 1e300 : std::max(0.0, (double) avail - (double) kRamMargin) + pool,
                                     commit_room());
         // (auto: none - copies that all fit were measured no faster than the page cache: the CPU lane's rows are
@@ -6566,12 +6575,14 @@ struct Model::Impl {
             bool ok = true;
             for (int X = 0; X < NH && ok; ++X) {
                 size_t got = bytes;
-                base[(size_t) X] = (uint8_t*) (huge ? os::huge_alloc(bytes, &got) : node_map(bytes, X, NH));
+                base[(size_t) X] = (uint8_t*) (huge1 ? os::huge_alloc_1g(bytes, &got)
+                                                     : (huge ? os::huge_alloc(bytes, &got) : node_map(bytes, X, NH)));
                 if (huge && base[(size_t) X] == nullptr) {   // no pool on this machine: the ordinary arena instead
                     static bool warned = false;
                     if (!warned) {
-                        std::fprintf(stderr, "ds4: the 2 MB huge-page arena was asked for but the pool ran out (reserve more: sysctl "
-                                             "vm.nr_hugepages=N); using the ordinary arena\n");
+                        std::fprintf(stderr, "ds4: the %s huge-page arena was asked for but the pool ran out (reserve more: sysctl "
+                                             "vm.nr_hugepages=N, or the 1 GB boot params); using the ordinary arena\n",
+                                     huge1 ? "1 GB" : "2 MB");
                         warned = true;
                     }
                     arena_all_huge = false;

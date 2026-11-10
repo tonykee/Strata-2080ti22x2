@@ -477,6 +477,44 @@ inline uint64_t huge_free_bytes() {
 #endif
 }
 
+/// Bytes free in the 1 GB huge-page pool (`hugepages-1048576kB/free_hugepages`), 0 when absent.
+inline uint64_t huge_free_bytes_1g() {
+#if defined(_WIN32) || defined(__APPLE__)
+    return 0;
+#else
+    std::FILE* f = std::fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", "r");
+    if (f == nullptr) return 0;
+    unsigned long long n = 0;
+    if (std::fscanf(f, "%llu", &n) != 1) n = 0;
+    std::fclose(f);
+    return n * (1ull << 30);
+#endif
+}
+
+/// Anonymous memory on explicit 1 GB huge pages (MAP_HUGETLB|MAP_HUGE_1GB): rounded up to whole 1 GB pages.  The
+/// pool must be reserved at boot (`default_hugepagesz=1G hugepagesz=1G hugepages=N`); 87 GB is then ~87 TLB
+/// entries instead of 43,000 with 2 MB pages - the random expert reads of a 4-rank DDR3 arena care.
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+#ifndef MAP_HUGE_1GB
+#define MAP_HUGE_1GB (30 << MAP_HUGE_SHIFT)
+#endif
+inline void* huge_alloc_1g(size_t bytes, size_t* got = nullptr) {
+#if defined(_WIN32) || defined(__APPLE__)
+    (void) bytes, (void) got;
+    return nullptr;
+#else
+    const size_t hp = (size_t) 1 << 30;
+    const size_t hb = (bytes + hp - 1) / hp * hp;
+    void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    if (got != nullptr) *got = hb;
+    return m;
+#endif
+}
+
 /// Anonymous memory on explicit 2 MB huge pages (MAP_HUGETLB, from the kernel's pool - reserve it first, e.g.
 /// `sysctl vm.nr_hugepages=N`): rounded up to a whole number of huge pages, `*got` its size.  nullptr: the pool is empty
 /// or the kernel cannot.  (Unlike THP, a pin of this memory keeps 2 MB pages: a DMA from it does not need 4 KB

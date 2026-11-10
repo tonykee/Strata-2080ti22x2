@@ -1315,3 +1315,31 @@ token, ~48 MB) would need ~15 GB/s, more than the 10 measured, so its 25 MB L3 m
 
 If the BIOS is running the DIMMs below their rated speed, or with interleaving off, fixing that is worth
 more than any engine knob left: the CPU lane streams ~48 MB a token from this RAM.
+
+## 256 GB (2DPC) against 128 GB (1DPC): the memory sets the decode (2026-11-10)
+
+The 256 GB kit is 8x32 GB DDR3-1600 4Rx4 (2 DIMMs a channel); the 128 GB config was 4x32 GB of the same
+modules (1 DIMM a channel).  The same model, config and code:
+
+```text
+128 GB (1DPC): warm-up 10.7K 792, 13K 800, 6-turn mean 31.4 (8/12 turns >= 30)
+256 GB (2DPC): warm-up 10.7K 490-523, 13K 609, 6-turn 26.1 / 22.6 / 15.2 / 15.4 / 16.4 / 21.2
+               load: 85.5 GB into RAM in 83.8 s (128 GB: 52-67 s)
+```
+
+Rank count and 1600 MT/s are the same; only the DIMMs a channel changed (4 ranks -> 8 ranks a channel).  The
+model's CPU lane is 10 threads reading random 3.3 MB expert blobs, so the effective (not peak) throughput of
+the 2DPC rank interleaving is what falls; a 2 MB page arena (43,000 TLB entries) adds to it.
+
+### 1 GB huge-page arena (opt-in, for the 2DPC kit)
+
+`ds4_os.hpp` now has `huge_alloc_1g()` (`MAP_HUGETLB | MAP_HUGE_1GB`) and `huge_free_bytes_1g()`;
+`DS4_COPY_HUGE_1G=1` (or unset with the 1 GB pool holding 1.6x the copy) puts the 87 GB arena on ~120 1 GB
+pages instead of 43,000 2 MB ones.  The pool must be reserved at boot:
+
+```text
+default_hugepagesz=1G hugepagesz=1G hugepages=160
+```
+
+The per-layer allocation rounds up to 1 GB, hence the 1.6x (85.5 GB -> ~120-130 GB).  It is not enabled by
+default; the 4x32 GB 1DPC kit remains the fast configuration for this model.
