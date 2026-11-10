@@ -92,9 +92,10 @@ cd /home/likan/strata-latest
 ./start_iq3s_117.sh       # SC117 abliterated IQ3_S
 ./stop.sh                 # stops this branch only, not ~/strata
 
-./start_swift_fast.sh         # fast/adapt config, no huge-page pool (THP); background, PID file
-./start_swift_fast.sh --wait  # same, wait for /health
-./stop_swift_fast.sh          # stop only the fast instance
+./start_swift_fast.sh             # fast/adapt with vision (default), no huge-page pool (THP)
+./start_swift_fast.sh --no-vision # text-only fast/adapt
+./start_swift_fast.sh --wait      # same as default, wait for /health
+./stop_swift_fast.sh              # stop only the fast instance
 ```
 
 For the 256 GB / 2DPC box, the huge-page wrapper reserves a 2 MB pool before the server and

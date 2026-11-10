@@ -1,23 +1,32 @@
 #!/bin/sh
 # Start the fast/adapt Swift config with NO huge-page pool (THP pages).
 #
-#   ./start_swift_fast.sh          start in the background; returns at once
-#   ./start_swift_fast.sh --wait   wait for /health (load takes about a minute)
-#   ./stop_swift_fast.sh           stop this instance
+#   ./start_swift_fast.sh              start with vision (strata-swift-fast-vision.json)
+#   ./start_swift_fast.sh --no-vision  text-only (strata-swift-fast.json)
+#   ./start_swift_fast.sh --wait       wait for /health (load takes about a minute)
+#   ./stop_swift_fast.sh               stop this instance
 #
-# Config: strata-swift-fast.json (batch 2, --adapt-every 2, no vision, 393216/rope 1.5,
-# STRATA_ARENA_HUGE_1G=1 but no pool: the engine tries 1 GB, then 2 MB, then THP).
+# Default config: strata-swift-fast-vision.json (batch 2, --adapt-every 2, --vision,
+# 393216/rope 1.5, STRATA_ARENA_HUGE_1G=1 but no pool: 1 GB -> 2 MB -> THP).
+# --no-vision uses strata-swift-fast.json (same but no vision encoder).
 # The script refuses to start if port 8000 or another strata engine is in use, and releases
 # a leftover 2 MB/1 GB pool first so the run is really "no pool".
 set -u
 cd "/home/likan/strata-latest" || exit 1
 
 PORT=${STRATA_PORT:-8000}
-CONFIG=strata-swift-fast.json
+CONFIG=strata-swift-fast-vision.json
 PIDFILE=.strata-swift-fast.pid
 LOG=${STRATA_LOG:-./strata-swift-fast-server.log}
 WAIT=0
-[ "${1:-}" = "--wait" ] && WAIT=1
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --no-vision) CONFIG=strata-swift-fast.json; shift ;;
+        --vision) CONFIG=strata-swift-fast-vision.json; shift ;;
+        --wait) WAIT=1; shift ;;
+        *) break ;;
+    esac
+done
 
 if [ ! -f "$CONFIG" ]; then
     echo "config not found: $CONFIG" >&2
