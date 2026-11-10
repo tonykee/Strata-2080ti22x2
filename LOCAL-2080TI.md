@@ -107,6 +107,14 @@ HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh -b2   # 48 GB is enough; asks for sudo
 The wrapper refuses to start when port 8000 or another `strata` engine is already in use.  It
 releases only a pool it reserved; a pool reserved by DS4 or by hand is left alone.
 
+The wrapper's default is 96 GB because that is the only passwordless sudo helper.  Swift needs
+23,983 pages (46.84 GiB); 48 GB (`HUGEPAGE_GB=48`) is enough and leaves about 48 GB more for the
+model page cache.  On the `strata-swift-fast` config the 96 GB pool measured lower on the quick
+suite (4K 1,005 vs 1,239 tok/s) because the page cache was squeezed; use 48 GB there, or no pool
+for short prompts.  1 GB pages are optional: add `default_hugepagesz=1G hugepagesz=1G hugepages=48`
+to the kernel command line; with `STRATA_ARENA_HUGE_1G=1` (already in the wrapper configs) the
+engine uses 1 GB when the pool exists, and falls back to 2 MB otherwise.
+
 The start scripts refuse to run when port 8000 is already in use, so stop the production tree
 (`/home/likan/strata/stop.sh`) first if it is running.
 
