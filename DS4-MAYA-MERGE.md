@@ -1256,3 +1256,62 @@ The remaining candidates (the lookahead, the 3,6 TP share for the head card, a d
 draft graph) all need a same-state A/B; one boot gives about two fast loads.  The clean protocol is in
 `bench/ds4-baseline/README.md`: reserve the pool once, `STRATA_WARMUP=1`, two loads, the warm-up 10.7K rate as
 the gauge.
+
+## 256 GB: the best 13K load yet, then the host state again (2026-11-10)
+
+The machine now holds 8 x 32 GB RDIMMs (250 GiB usable, one NUMA node, four channels).  With the 96 GB
+pool reserved, the first load of the 09:04 boot was the best 13K sample recorded:
+
+```text
+copy 12398 experts (85.7 GB) in 47.3 s, pin 2.7 s (155.2 GB of RAM free to keep them: 31 GB on 128 GB)
+prompt: 13058 tokens in 17825 ms (732.58 tok/s)
+decode: 128 tokens in 1960 ms (64.80 tok/s), dspark 26 rounds, 4.92 tokens a round
+per token: layers 5.29 ms (CPU lane 3.24), head wait 8.17, Engram 0.36
+```
+
+At this state the head/draft path (8.17 ms a token) is the largest stage, not the CPU lane, so the next
+lever is there and not the expert lookahead.
+
+It did not hold for the boot: load 2 (`DS4_AHEAD=0`) read 564.63 prefill / 44.04 decode (CPU lane 10.49,
+head 12.90, copy 67.9 s) and load 3, after releasing and re-reserving the pool, 562.04 / 43.65 (CPU lane
+10.69, head 13.13, copy 74.4 s).  The pool is not the state, and 256 GB does not remove it.  The next
+boot (09:33) was slow on its *first* load (539.00 / 43.68, copy 77.5 s), so "the first two loads after a
+reboot are fast" held on 11-09 but not here.
+
+`DS4_TP_SHARES` 4,5 against 3,6 in that boot, the same 13K prompt (4,5 / 3,6 / 4,5 / 3,6):
+
+```text
+4,5  538.70 / 44.83   CPU lane 10.04   card0 12.51 GB (3275)   card1 11.26 GB (2891)
+3,6  524.06 / 41.59   CPU lane 11.31   card0 10.30 GB (3295)   card1 13.60 GB (2911)
+4,5  (killed: an outside strata-ds4-hugepages 96 ran sync + compact mid-load)
+3,6  519.67 / 39.93   CPU lane 12.55   card0  9.73 GB (3048)   card1 12.46 GB (2664)
+```
+
+3,6 moves the FFN weights between the cards but only about 20 experts a card, and each load of the boot
+was slower than the one before (44.83, 41.59, 39.93), so this comparison is the drift and not the share.
+No win to record; the harness is `bench/ds4-baseline/run_one.sh` and `run_ab_tp.sh`.
+
+## The host's DRAM reads measure ~10 GB/s (2026-11-10)
+
+A sum over pre-touched buffers on the idle machine right after that boot, no engine running (the probes
+are `/tmp/opencode/membw.c`, `membw4.c`, `membw3.c`, `membw_hp.c`):
+
+```text
+1 thread                        6.6 - 8.9 GB/s
+2 threads                       9.8
+4, 8, 10, 16, 20 threads        8.8 - 10.5
+16 separate 512 MB buffers, one thread each   9.7 - 10.2
+the same on explicit 2 MB pages (the pool)    9.7 - 10.3
+in cache (16 MB, 4 threads)     35.8
+```
+
+Two threads saturate the host, so this is one channel's bandwidth on a machine whose four channels are
+populated (EDAC reports 8 x 32768 MB, two DIMMs on each of Ha#0 and Ha#1's two channels).  The loop is
+not the limit (35.8 GB/s in cache), and it is not the cgroup (cpu.max = max, 20 CPUs).  Not tested: the
+BIOS's configured memory speed and channel mode (dmidecode needs root), and whether this ceiling is the
+cause of the fast/slow load state - the fast load's CPU lane (3.24 ms a token for about 7 experts a
+token, ~48 MB) would need ~15 GB/s, more than the 10 measured, so its 25 MB L3 must be serving part of it
+(inferred from the numbers, not measured).
+
+If the BIOS is running the DIMMs below their rated speed, or with interleaving off, fixing that is worth
+more than any engine knob left: the CPU lane streams ~48 MB a token from this RAM.
