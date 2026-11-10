@@ -64,6 +64,10 @@ static_assert(sizeof(SharedArenaHeader) <= kSharedArenaHeaderBytes);
 // Shared-section views: MapViewOfFile address -> the section handle, so release() unmaps and closes instead of VirtualFree.
 std::mutex g_views_mu;
 std::map<void*, HANDLE> g_views;
+#else
+// STRATA_ARENA_HUGE_1G: the mapping was rounded up to whole 1 GB pages, so release() must unmap that size, not `bytes`.
+std::mutex g_huge1g_mu;
+std::map<void*, uint64_t> g_huge1g_views;
 #endif
 
 #ifndef _WIN32
@@ -434,6 +438,49 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
         note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
     } else {
+        // DS4's CPU-lane arena ports here: STRATA_ARENA_HUGE_1G=1 asks for explicit 1 GB pages first.  The same
+        // reason as there: a 46+ GiB arena of 2 MB pages is 24,000 TLB entries that no TLB holds, and the CPU
+        // pool reads random expert blobs out of it.  Reserve the pool at boot, e.g.
+        //   default_hugepagesz=1G hugepagesz=1G hugepages=64
+        // (64 pages cover the 46.84 GiB Swift arena; DS4's arena needs more).  Any failure falls back to the
+        // 2 MB pool and then to transparent huge pages, so the default path is unchanged.
+#if defined(__linux__)
+        static const bool huge_1g = [] {
+            const char* v = std::getenv("STRATA_ARENA_HUGE_1G");
+            return v != nullptr && v[0] != '\0' && v[0] != '0';
+        }();
+        if (huge_1g) {
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+#ifndef MAP_HUGE_1GB
+#define MAP_HUGE_1GB (30 << MAP_HUGE_SHIFT)
+#endif
+            const uint64_t hp = 1ull << 30;
+            const uint64_t hb = (bytes + hp - 1) / hp * hp;
+            void* p = mmap(nullptr, (size_t) hb, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB, -1, 0);
+            if (p != MAP_FAILED) {
+                {
+                    std::lock_guard<std::mutex> lk(g_huge1g_mu);
+                    g_huge1g_views[p] = hb;
+                }
+                got = PageBacking::LargePages;
+                note = "hugetlb 1 GB pages (" + std::to_string((unsigned long long) (hb >> 30)) + " pages)";
+                return p;
+            }
+            unsigned long long pool = 0;
+            bool have_pool = false;
+            if (std::FILE* f = std::fopen("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", "r")) {
+                have_pool = std::fscanf(f, "%llu", &pool) == 1;
+                std::fclose(f);
+            }
+            note = "STRATA_ARENA_HUGE_1G: no 1 GB pool (needed " + std::to_string(hb >> 30) +
+                   " pages, nr_hugepages=" + (have_pool ? std::to_string(pool) : std::string("?")) +
+                   "); trying 2 MB pages";
+            std::fprintf(stderr, "strata: expert arena: %s\n", note.c_str());
+        }
+#endif
         void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
         if (p != MAP_FAILED) {
@@ -533,7 +580,16 @@ void release(void* p, uint64_t bytes) {
     }
     VirtualFree(p, 0, MEM_RELEASE);
 #else
-    munmap(p, bytes);
+    uint64_t unmap_bytes = bytes;
+    {
+        std::lock_guard<std::mutex> lk(g_huge1g_mu);
+        const auto it = g_huge1g_views.find(p);
+        if (it != g_huge1g_views.end()) {
+            unmap_bytes = it->second;
+            g_huge1g_views.erase(it);
+        }
+    }
+    munmap(p, unmap_bytes);
 #endif
 }
 
