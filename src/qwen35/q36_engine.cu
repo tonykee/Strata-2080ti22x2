@@ -2926,7 +2926,39 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer* L : all)
         if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
-    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+    bool pinned = false;
+    // STRATA_Q36_HUGE_1G=1: the host expert arena on explicit 1 GB pages (MAP_HUGETLB|MAP_HUGE_1GB), pinned by
+    // cudaHostRegister.  The DS4's CPU-lane arena got the same for the same reason: an 87 GB arena on 2 MB pages
+    // is 43,000 TLB entries and the model reads random expert blobs; this one is 40+ GB.  Reserve at boot:
+    // default_hugepagesz=1G hugepagesz=1G hugepages=160.  Fallback: cudaHostAlloc, as before.
+#ifndef MAP_HUGE_SHIFT
+#define MAP_HUGE_SHIFT 26
+#endif
+#ifndef MAP_HUGE_1GB
+#define MAP_HUGE_1GB (30 << MAP_HUGE_SHIFT)
+#endif
+#if !defined(_WIN32)
+    {
+        const char* e = std::getenv("STRATA_Q36_HUGE_1G");
+        if (e != nullptr && std::atoi(e) != 0) {
+            const size_t hp = (size_t) 1 << 30;
+            const size_t hb = (host + hp - 1) / hp * hp;
+            void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB, -1, 0);
+            if (m != MAP_FAILED && cudaHostRegister(m, hb, cudaHostRegisterDefault) == cudaSuccess) {
+                arena = (uint8_t*) m;
+                pinned = true;
+                std::fprintf(stderr, "strata-q36: the expert arena on 1 GB pages (%.1f GB, %zu pages)\n",
+                             (double) hb / 1e9, hb >> 30);
+            } else {
+                if (m != MAP_FAILED) ::munmap(m, hb);
+                (void) cudaGetLastError();
+                std::fprintf(stderr, "strata-q36: STRATA_Q36_HUGE_1G=1 but the 1 GB pool is not there; cudaHostAlloc instead\n");
+            }
+        }
+    }
+#endif
+    if (!pinned) pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
     if (!pinned) {
         (void) cudaGetLastError();
         arena = (uint8_t*) std::malloc(host);
