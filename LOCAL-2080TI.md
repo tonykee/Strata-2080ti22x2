@@ -97,9 +97,9 @@ For the 256 GB / 2DPC box, the huge-page wrapper reserves a 2 MB pool before the
 releases it on exit:
 
 ```bash
-./start_swift_2mb_cache.sh --batch2   # batch 2 (concurrency), 96 GB pool; releases on Ctrl+C
-./start_swift_2mb_cache.sh --single   # batch off, fastest single stream
-HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh --batch2   # 48 GB is enough; asks for sudo
+./start_swift_2mb_cache.sh            # default: no concurrency (batch off), 96 GB pool
+./start_swift_2mb_cache.sh -b2        # two requests decode together (batch 2)
+HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh -b2   # 48 GB is enough; asks for sudo
 ./start_swift_2mb_cache.sh --check    # reserve, print, release; does not start a server
 ./stop_swift_2mb_cache.sh             # only if the start script was killed with SIGKILL
 ```

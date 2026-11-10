@@ -1,9 +1,9 @@
 #!/bin/sh
 # Start Swift 1.5 IQ3_S with a 2 MB huge-page expert arena, and release the pool on exit.
 #
-#   ./start_swift_2mb_cache.sh              # batch 2 (concurrency), 96 GB pool
-#   ./start_swift_2mb_cache.sh --single     # batch off, fastest single stream
-#   HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh --batch2   # 48 GB is enough for Swift; needs sudo password
+#   ./start_swift_2mb_cache.sh              # default: no concurrency (batch off), fastest single stream
+#   ./start_swift_2mb_cache.sh -b2          # batch 2: two requests decode together
+#   HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh -b2   # 48 GB is enough for Swift; needs sudo password
 #   HUGEPAGE_GB=0  ./start_swift_2mb_cache.sh             # no reservation; engine uses THP/4 KB
 #   ./start_swift_2mb_cache.sh --check      # reserve, print the pool, release it; no server
 #
@@ -15,12 +15,12 @@ set -u
 cd "/home/likan/strata-latest" || exit 1
 
 PORT=${STRATA_PORT:-8000}
-CONFIG=strata-swift-2mb-cache-batch2.json
+CONFIG=strata-swift-2mb-cache.json
 CHECK=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        -b2|--batch2) CONFIG=strata-swift-2mb-cache-batch2.json; shift ;;
         --single) CONFIG=strata-swift-2mb-cache.json; shift ;;
-        --batch2) CONFIG=strata-swift-2mb-cache-batch2.json; shift ;;
         --check) CHECK=1; shift ;;
         --) shift; break ;;
         *) break ;;
