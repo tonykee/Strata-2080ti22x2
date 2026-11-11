@@ -1,11 +1,11 @@
 #!/bin/sh
 # Start the fast/adapt Swift config with NO huge-page pool (THP pages).
 #
-#   ./start_swift_fast.sh              start with vision (strata-swift-fast-vision.json)
+#   ./start_swift_fast.sh              start with vision; listens on 0.0.0.0:8000 (LAN)
+#   ./start_swift_fast.sh --local      listen on 127.0.0.1 only
 #   ./start_swift_fast.sh --no-vision  text-only (strata-swift-fast.json)
 #   ./start_swift_fast.sh --wait       wait for /health (load takes about a minute)
-#   ./start_swift_fast.sh --lan        listen on 0.0.0.0 (reachable from the LAN)
-#   ./start_swift_fast.sh --host ADDR  listen on ADDR (default 127.0.0.1)
+#   ./start_swift_fast.sh --host ADDR  listen on ADDR (default 0.0.0.0)
 #   ./stop_swift_fast.sh               stop this instance
 #
 # Default config: strata-swift-fast-vision.json (batch 2, --adapt-every 2, --vision,
@@ -17,7 +17,7 @@ set -u
 cd "/home/likan/strata-latest" || exit 1
 
 PORT=${STRATA_PORT:-8000}
-HOST=${STRATA_HOST:-127.0.0.1}
+HOST=${STRATA_HOST:-0.0.0.0}
 CONFIG=strata-swift-fast-vision.json
 PIDFILE=.strata-swift-fast.pid
 LOG=${STRATA_LOG:-./strata-swift-fast-server.log}
@@ -28,6 +28,7 @@ while [ "$#" -gt 0 ]; do
         --vision) CONFIG=strata-swift-fast-vision.json; shift ;;
         --wait) WAIT=1; shift ;;
         --lan) HOST=0.0.0.0; shift ;;
+        --local) HOST=127.0.0.1; shift ;;
         --host)
             [ "$#" -ge 2 ] || { echo "--host needs an address" >&2; exit 2; }
             HOST=$2; shift 2 ;;

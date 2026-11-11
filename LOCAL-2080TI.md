@@ -92,10 +92,10 @@ cd /home/likan/strata-latest
 ./start_iq3s_117.sh       # SC117 abliterated IQ3_S
 ./stop.sh                 # stops this branch only, not ~/strata
 
-./start_swift_fast.sh             # fast/adapt with vision (default), no huge-page pool (THP)
+./start_swift_fast.sh             # vision, no pool; listens on 0.0.0.0:8000 (LAN) by default
+./start_swift_fast.sh --local     # 127.0.0.1 only
 ./start_swift_fast.sh --no-vision # text-only fast/adapt
-./start_swift_fast.sh --wait      # same as default, wait for /health
-./start_swift_fast.sh --lan       # listen on 0.0.0.0:8000 for the LAN; API key from the config
+./start_swift_fast.sh --wait      # wait for /health
 ./stop_swift_fast.sh              # stop only the fast instance
 ```
 
