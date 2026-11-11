@@ -3,7 +3,7 @@
 #
 #   ./start_swift_2mb_cache.sh              # default: no concurrency (batch off), fastest single stream
 #   ./start_swift_2mb_cache.sh -b2          # batch 2: two requests decode together
-#   HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh -b2   # 48 GB is enough for Swift; needs sudo password
+#   HUGEPAGE_GB=48 ./start_swift_2mb_cache.sh -b2   # 48 GB is enough for Swift (passwordless after the sudoers rule)
 #   HUGEPAGE_GB=0  ./start_swift_2mb_cache.sh             # no reservation; engine uses THP/4 KB
 #   ./start_swift_2mb_cache.sh --check      # reserve, print the pool, release it; no server
 #
@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
         *) break ;;
     esac
 done
-HUGEGB=${HUGEPAGE_GB:-96}
+HUGEGB=${HUGEPAGE_GB:-48}
 NEED_PAGES=23983                 # 46.84 GiB expert arena / 2 MiB
 MARKER=.swift-2mb-cache.pool
 OWN_POOL=0
@@ -85,7 +85,7 @@ else
     echo "reserving ${HUGEGB} GB of 2 MB pages..."
     HUGE_CMD=/usr/local/sbin/strata-ds4-hugepages
     [ -x "$HUGE_CMD" ] || HUGE_CMD=tools/ds4_hugepages.sh
-    if [ "$HUGEGB" -eq 96 ] && sudo -n "$HUGE_CMD" 96; then
+    if sudo -n "$HUGE_CMD" "$HUGEGB"; then
         OWN_POOL=1
     elif sudo "$HUGE_CMD" "$HUGEGB"; then
         OWN_POOL=1
