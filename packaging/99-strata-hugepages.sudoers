@@ -1,0 +1,4 @@
+# Let likan reserve the 48 GB 2 MB huge-page pool used by the Swift expert arena.
+# Only this exact helper call is passwordless; sysctl and every other command still ask for a password.
+# The 96 GB pool and the release helper already have their own NOPASSWD rules.
+likan ALL=(root) NOPASSWD: /usr/local/sbin/strata-ds4-hugepages 48
