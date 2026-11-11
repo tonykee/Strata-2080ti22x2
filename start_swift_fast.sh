@@ -4,6 +4,8 @@
 #   ./start_swift_fast.sh              start with vision (strata-swift-fast-vision.json)
 #   ./start_swift_fast.sh --no-vision  text-only (strata-swift-fast.json)
 #   ./start_swift_fast.sh --wait       wait for /health (load takes about a minute)
+#   ./start_swift_fast.sh --lan        listen on 0.0.0.0 (reachable from the LAN)
+#   ./start_swift_fast.sh --host ADDR  listen on ADDR (default 127.0.0.1)
 #   ./stop_swift_fast.sh               stop this instance
 #
 # Default config: strata-swift-fast-vision.json (batch 2, --adapt-every 2, --vision,
@@ -15,6 +17,7 @@ set -u
 cd "/home/likan/strata-latest" || exit 1
 
 PORT=${STRATA_PORT:-8000}
+HOST=${STRATA_HOST:-127.0.0.1}
 CONFIG=strata-swift-fast-vision.json
 PIDFILE=.strata-swift-fast.pid
 LOG=${STRATA_LOG:-./strata-swift-fast-server.log}
@@ -24,6 +27,10 @@ while [ "$#" -gt 0 ]; do
         --no-vision) CONFIG=strata-swift-fast.json; shift ;;
         --vision) CONFIG=strata-swift-fast-vision.json; shift ;;
         --wait) WAIT=1; shift ;;
+        --lan) HOST=0.0.0.0; shift ;;
+        --host)
+            [ "$#" -ge 2 ] || { echo "--host needs an address" >&2; exit 2; }
+            HOST=$2; shift 2 ;;
         *) break ;;
     esac
 done
@@ -65,8 +72,11 @@ if [ "$TOTAL" -gt 0 ]; then
     fi
 fi
 
+if [ "$HOST" != "127.0.0.1" ] && [ "$HOST" != "localhost" ]; then
+    echo "NOTE: listening on $HOST:$PORT, not just localhost. Use the config's API key and a firewall rule for your LAN subnet."
+fi
 nohup /usr/bin/python3 /home/likan/strata-latest/strata.py serve \
-    --profile "$CONFIG" --host 127.0.0.1 --port "$PORT" --quiet \
+    --profile "$CONFIG" --host "$HOST" --port "$PORT" --quiet \
     > "$LOG" 2>&1 &
 PID=$!
 echo "$PID" > "$PIDFILE"

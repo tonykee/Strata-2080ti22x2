@@ -95,6 +95,7 @@ cd /home/likan/strata-latest
 ./start_swift_fast.sh             # fast/adapt with vision (default), no huge-page pool (THP)
 ./start_swift_fast.sh --no-vision # text-only fast/adapt
 ./start_swift_fast.sh --wait      # same as default, wait for /health
+./start_swift_fast.sh --lan       # listen on 0.0.0.0:8000 for the LAN; API key from the config
 ./stop_swift_fast.sh              # stop only the fast instance
 ```
 
