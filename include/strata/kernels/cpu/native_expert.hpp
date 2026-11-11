@@ -78,6 +78,14 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
 
+// LOCAL (2080 Ti DS4): gate and up read from separate bases, and down with its offset ignored.  The DS4 CPU
+// expert path keeps the two halves apart (the merged upstream header dropped these two declarations).
+void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const uint8_t* up_base,
+                          const void* const* act, int nt, float* const* ff, int r0, int r1,
+                          float swiglu_limit);
+void native_down_rows_split(const NativeFmt& f, const uint8_t* down_base, const void* const* hq, int nt,
+                            float* const* out, int r0, int r1);
+
 /// Same per-token result as the corresponding legacy nt=1 call on this build and CPU.
 /// Kernels that already satisfy this contract retain their grouped execution.
 void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
