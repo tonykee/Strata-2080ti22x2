@@ -145,3 +145,33 @@ all made it worse.  Full numbers, the rejected settings and the harness:
 The remaining 9-11% needs 1DPC (or a future 1 GB-page/PLE-hugepage experiment); the BIOS has no
 rank-interleaving or command-rate setting.
 
+
+## 0.2.13 / engine 0.1.59 merge (2026-11-11)
+
+`origin/main` 0.2.13 (engine 0.1.59) was merged into the DS4 branch on `merge-main-0.2.13` and then
+into `ds4-cuda-prefill`.  The pre-merge state is the tag `backup-pre-main-merge-20261111`.  Only two
+files conflicted (`CMakeLists.txt`, `native_expert.hpp`): upstream moved the build graph into
+`cmake/*.cmake`, and the local DS4 split-row declarations had to be restored.  All local DS4/1 GB/
+conv-cache/`/v1/models` changes are still present.
+
+Both targets build as 0.1.59.1:
+
+```text
+build-merge/strata        (CUDA 12.8, sm_75)
+build-merge/strata-dsv41  (DS4; compiles, not benchmarked in this pass)
+```
+
+Swift A/B against 0.1.57, same fast config, no pool: 16K prefill **1,674.0 -> 1,824.4 (+9.0%)**,
+agent decode **75.7 -> 82.0 (+8.3%)**, 4K +0.4%, 50K flat, 100K +1.3% prefill / +2.9% decode.
+
+The 48 GB 2 MB pool (not 96 GB) is the right size: with `start_swift_2mb_cache.sh` (single, vision,
+0.1.59.1) the quick suite is 82.9 chat / 1,224.9 at 4K / 1,813.8 at 16K / 87.5 agent, and 50K/100K
+are 2,219.4/107.9 and 2,152.3/129.4.  50K prefill is slightly above the old 128 GB 1DPC record
+(2,182.7); 100K decode is above its 125.8; 100K prefill is still 9.5% below 2,378.9.  The 96 GB pool
+squeezed the page cache (4K about 1,005); 48 GB leaves 593 pages free and keeps the 4K/16K near the
+no-pool numbers.  The passwordless rule is `packaging/99-strata-hugepages.sudoers`; the wrapper now
+defaults to 48 GB.
+
+Vision still uses the 0.1.57 `engine/strata-vision` encoder against the 0.1.59.1 engine (a red-square
+test answered "Red").  Full numbers and caveats:
+[bench/results/2026-11-11-merge-main-0.2.13/README.md](bench/results/2026-11-11-merge-main-0.2.13/README.md).
