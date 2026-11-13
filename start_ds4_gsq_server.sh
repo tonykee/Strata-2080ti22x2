@@ -25,8 +25,9 @@ if [ "$HUGEGB" -gt 0 ] 2>/dev/null; then
     fi
 fi
 
+# Reachable from the LAN (0.0.0.0) with the config's API key; STRATA_HOST=127.0.0.1 keeps it local.
 DS4_CONFIG=${DS4_CONFIG:-./tools/strata-ds4-gsq-2080ti.json} \
 DS4_HUGEPAGE_GB=0 \
 DS4_LOG=${DS4_LOG:-./strata-ds4-gsq-server.log} \
 STRATA_WARMUP=${STRATA_WARMUP:-1} \
-    exec ./start_cpu_lane.sh "$@"
+    exec ./start_cpu_lane.sh --host "${STRATA_HOST:-0.0.0.0}" "$@"
