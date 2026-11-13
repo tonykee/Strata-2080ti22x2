@@ -12,7 +12,7 @@
     "--tp",
     "2",
     "--max-context",
-    "262144",
+    "393216",
     "--reserve-mib",
     "768",
     "--cpu-threads",

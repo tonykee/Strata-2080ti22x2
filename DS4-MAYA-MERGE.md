@@ -1526,15 +1526,23 @@ profile learned under a single-card placement ranks experts for that placement, 
 pack's file after this round and TP2 retrains it; the TP2 numbers above were taken before the drift, the
 card ones after.  A future A/B should give each topology its own `DS4_PROFILE`.
 
-### Context: 256K (2026-11-13, night)
+### Context: 384K (2026-11-13, night)
 
-The launcher (`DS4_MAX_CONTEXT`, now 262144) and the server config (`--max-context 262144`) both run 256K;
-the pack allows 1,048,576 (YaRN x16 over 65,536).  Measured at 256K, faithful and drafter off: load 136 s,
-INFO `context=262144 kv=fp4 kv_resident=262144`, VRAM experts **2606** (1495 + 1111) against 2730 at 32K,
-the chunk caches 0.24 GB a card against 0.03, decode 128 tokens at 9.89 / 13.59 tok/s against 9.48-9.66 /
-13.76-14.98 at 32K - the KV's 2.5 GB come out of the experts' room but stay inside the run spread.  A full
-256K prompt was not read: the stream alone is 32 chunks x 97 GB at 8 GB/s (~6.5 min) and the attention grows
-with the square (1.4 s at 13K), so it would take many minutes.
+The launcher (`DS4_MAX_CONTEXT`, now 393216) and the server config (`--max-context 393216`) run 384K; the
+pack allows 1,048,576 (YaRN x16 over 65,536).  The KV is fp4 and fully resident (`kv_resident=393216`).
+Measured, faithful with the drafter off unless said:
+
+| | 32K | 256K | 384K |
+| --- | ---: | ---: | ---: |
+| VRAM experts (both cards) | 2730 | 2606 | **2536** (1460 + 1076) |
+| chunk caches a card | 0.03 GB | 0.24 GB | 0.36 GB |
+| decode 128 tokens, warm | 9.48-9.66 / 13.76-14.98 | 9.89 / 13.59 | not re-run |
+| API 200 tokens, temperature 0.3 | 11.47 | 10.79 | **11.32** tok/s |
+| server `max_model_len` | 32768 | 262144 | **393216** |
+
+So 384K costs 194 VRAM experts (7% of 2730) at 32K and nothing measurable in decode.  A full 384K prompt
+was not read: 48 chunks x 97 GB at 8 GB/s is about 9.7 minutes of streaming alone, and the attention grows
+with the square (1.4 s at 13K).
 
 ### Prefill: where the time goes, and what does not help (2026-11-13, night)
 
@@ -1579,7 +1587,7 @@ Readings:
 ./stop_ds4_gsq.sh
 ```
 
-Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **256K context**,
+Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **384K context**,
 cache substitution off, and the drafter off beside it - see "The drafter and the card").  The expert profile
 is the writable `ds4-gsq-expert-profile.bin` (the pack's copy when absent).
 
@@ -1674,7 +1682,7 @@ host fragmentation), but it is not the 11.9 s the engine's comment records for o
 ./stop_ds4_gsq.sh
 ```
 
-Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **256K context**,
+Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **384K context**,
 cache substitution off, and the drafter off beside it - see "The drafter and the card").  The expert profile
 is the writable `ds4-gsq-expert-profile.bin` (the pack's copy when absent).
 
