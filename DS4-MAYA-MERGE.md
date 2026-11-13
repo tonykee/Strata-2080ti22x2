@@ -1343,3 +1343,313 @@ default_hugepagesz=1G hugepagesz=1G hugepages=160
 
 The per-layer allocation rounds up to 1 GB, hence the 1.6x (85.5 GB -> ~120-130 GB).  It is not enabled by
 default; the 4x32 GB 1DPC kit remains the fast configuration for this model.
+
+## GSQ-RCO IQ2_XXS (1.94 bpw) on the same 2x 2080 Ti (2026-11-13)
+
+The ISTA-DASLab `DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF` set (ModelScope, 248.8 GB including the shared
+Engram table) now runs on this branch.  It is not the same pack shape as the Maya-XS sets: the experts are
+GGUF i-quants (IQ1_M / IQ2_XXS / IQ2_XS, 1.94 bpw, 132.1 GB of experts) and the pack is
+`.../DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-dspark` (DSpark drafter included, Engram 110.8 GB).
+
+Two changes were needed:
+
+1. **Native CPU-lane buffer floors** (`include/strata/kernels/cpu/native_expert.hpp`): 8192 / 4096 bytes.
+   The floors were 4096 / 1024, sized for Flash-Next's 2560-wide hidden state; DeepSeek's 5120-wide
+   gate/up activation is 20 x 292 = 5840 bytes as Q8_K, so every GGUF pack with a CPU-lane expert aborted at
+   load ("activation larger than the pool's buffers").  The buffers are per token: the wider floor costs 4 KB
+   a token.  This is the same raise the earlier CPU-lane attempt recorded above.
+2. **`DS4_COPY_PIN=1`** in the launcher and the server config.  With `--mmap-experts off` the 122 GB copy is
+   anonymous memory; unpinned, the prompt path cannot DMA the copied experts to the GPU and prefill falls to
+   the CPU lane: **35.5 tok/s at 3.5K unpinned against 213.6 pinned** (same everything else).  Pinning takes
+   5.5 s of the load.
+
+### 2 MB pages for this pack (128 GB pool, one root step)
+
+The CPU-lane copy is 122.0 GB, so the old 96 GB rule cannot hold it and the engine stays on ordinary
+pages (its own log says `the arena on 2 MB pages` only when the pool covers the whole copy).  A 128 GB
+rule is in `packaging/99-strata-hugepages-128.sudoers`; install it once as root:
+
+```sh
+sudo install -m 0440 -o root -g root packaging/99-strata-hugepages-128.sudoers \
+    /etc/sudoers.d/99-strata-hugepages-128
+sudo visudo -cf /etc/sudoers.d/99-strata-hugepages-128
+sudo -n /usr/local/sbin/strata-ds4-hugepages 128      # 65536 x 2 MB, passwordless after the rule
+```
+
+Then start normally: the engine takes the pool by itself (`DS4_COPY_HUGETLB` unset = on when the pool
+holds the whole copy).  Verify `HugePages_Total: 65536` and the engine's `the arena on 2 MB pages` line;
+`./stop_ds4_gsq.sh --release` gives the 128 GB back.
+
+**Measured with the pool on** (2026-11-13, 65536/65536 pages, the engine's `the arena on 2 MB pages` line
+present, same prompts and configs as the table above):
+
+| What | THP arena (pool off) | 2 MB pool on |
+| --- | ---: | ---: |
+| Load to READY | 138-149 s | 132-139 s |
+| Prefill, 13K prompt | 430.3 tok/s | 453.9 tok/s (+5.5%) |
+| Decode 128 tok, warm, faithful | 13.29 / 11.37 | 12.49 / 12.11 |
+| Decode 128 tok, warm, cache sub 0.1 | 23.08 / 23.07 | 24.93 / 23.21 (+4 to +8%) |
+
+So the pool is worth keeping for DS4 (faster load, a small prefill and decode gain, and no dependence on
+host fragmentation), but it is not the 11.9 s the engine's comment records for one prompt: that note says
+140 GB, and this box's prompt path is set by PCIe, not by page size.  A 13K prompt reads the CPU lane's
+122 GB to the GPU twice (two 8192-token chunks, ~244 GB) in 28.8 s, about 8.5 GB/s over PCIe 3.0 x16;
+4 KB pages gave 8.05 GB/s, i.e. 5%.  A 20 GB/s figure (11.9 s) is not reachable on this link.
+
+### What was tried for more speed, and rejected (2026-11-13, evening)
+
+All with the 128 GB pool, cache substitution 0.1 and the learned profile, against the same default
+(prefill 13K 436-462 tok/s, warm decode 24.6-30.3 tok/s across the runs).  The same config varies that
+much between runs, so a single run cannot show a change under about 10%.
+
+| Change | Measured | Kept? |
+| --- | --- | --- |
+| `--prefill-chunk 16384` (a 13K prompt in one pass) | prefill 366.6 tok/s; its buffers take 3.7 GB of VRAM (2730 -> 1864 experts) | no |
+| `DS4_TP_SHARES=4,5` (fill CUDA1) | 3230 experts in VRAM (up 500); decode 23.6 / 27.9, prefill 432.3 | no |
+| `DS4_CACHE_SUB_RATIO=0.2` | decode 24.6 / 30.1, prefill 458.5 - inside the 0.1 spread | no (0.1 stays) |
+| `DS4_FAT_ROWS=64` (upstream #4366) | decode 27.6 / 28.1, prefill 457.1 | no |
+| `DS4_ATTN_SLAB=2048` | decode 27.5 / 27.8, prefill 462.9 (+1.7% over the best, under noise) | no |
+| `DS4_FAST_ATTN=1` | decode 26.3 / 30.3, prefill 458.3 | no |
+| `--parallel 2` (two conversations) | 600 tokens in 52.4 s (11.45 tok/s in all) against 300 in 29.9 (10.03); each request 5.7-6.7 tok/s | no (the API gains +14% total for about twice the latency) |
+| `DS4_DSPARK_CONF=0.3` | first 300-token API request 11.79 tok/s against 11.83 | no |
+| `DS4_COPY_THREADS=20` (a local knob, reverted) | load copy 111.9 s against 100-107 at 12 | no |
+| `STRATA_DS4_LOAD_DROP_CACHE=0` | load copy 107.2 s (the DONTNEED hints cost nothing) | no |
+
+**Upstream PR #5765 (one-token IQ2_XXS / IQ2_XS / IQ1_M rows on AVX2)** was built into a second binary and
+run against the stock one, two runs each, in the faithful mode (no cache substitution), where the CPU lane
+is 21-38% of the picks:
+
+```text
+stock   decode 14.32 / 12.71  and  14.97 / 11.88 tok/s   (medians 14.65 / 12.30)
+#5765   decode 11.30 / 13.73  and  12.70 / 13.31 tok/s   (medians 12.00 / 13.52)
+```
+
+No gain: the two requests disagree in direction, and the PR itself notes that with every core streaming
+from DRAM the CPU lane is bandwidth-bound (this host's 2DPC DDR4-1600 measures ~8-10 GB/s effective).  Not
+applied.
+
+**Upstream PR #4302 (the second card as an expert-cache card)** is the one still worth doing: Adamyno
+measured it on 2x RTX 2080 Ti 22 GB with this same IQ2_XXS pack and no cache substitution - 16.98 tok/s on
+one card, 22.12 (+30%) with the second as the cache card, and 17.06 with the card loaded but
+`DS4_CACHE_CARD=0`, so the gain is its compute, not its memory; prompts unchanged.  Its 12 commits conflict
+in `ds4_model.cu` against this branch's local deltas (cache substitution, TP balance, peer all-reduce), and
+the topology it needs is `--gpus 0 --expert-cache-device1 auto` (CUDA1 takes no layers), which would have to
+be measured against this branch's TP2 before anything is adopted.  That is the next experiment, not a
+finished one.
+
+### The start warm-up (and the 401 that made it do nothing)
+
+`start_cpu_lane.sh`'s `STRATA_WARMUP` path never worked with a config that sets `api_key`: `warmup_ds4.py`
+sent no key and the server answered 401, which the script swallowed.  It now reads the config's `api_key`
+(or `STRATA_API_KEY`) and passes it; the warm-up (a short decode, a 1.6K prompt, a 13K prompt, a decode;
+107 s for two rounds measured) runs.  `start_ds4_gsq_server.sh` turns it on by default
+(`STRATA_WARMUP=0` skips it).
+
+What the warm-up is worth, measured 2026-11-13 on this pack: the first API request's CPU-lane share falls
+from 27-36% to **1.0%**, i.e. its experts are in VRAM from the first token.  The API decode itself does not
+move: the same 300-token question ran at 11.07 tok/s after the warm-up against 11.79 on a cold start (the
+run spread is larger than that).  Temperature matters more than warmth there: the same question at
+`temperature: 0` ran at 14.76 tok/s (`bench/ds4-gsq/parallel_test.py --temperature 0`), because at 0.3
+DSpark kept 68% of its drafts against 87% greedy.  The 26-30 tok/s in the tables above is the greedy engine
+path on a shorter code prompt, not the same workload.
+
+### The second card as an expert-cache card (upstream #4302): applied, measured, rejected
+
+The 12 commits of #4302 are applied on branch `ds4-cache-card` (two conflict hunks: our peer prefill
+all-reduce sits where the PR adds its card start-up chain; both are kept).  The merge itself exposed a bug
+worth writing down: the first resolution left the `load_cache_card` / `card_buffers` / `card_fill_start`
+chain on two lines, so the second call re-initialised the mapping after the first had filled VRAM and the
+card reported **0 experts** while holding 21.56 GB.  With the chain on one line the start prints:
+
+```text
+ds4: CUDA1 expert cache (--expert-cache-device1): 2486 of the CPU lane's most-routed experts,
+     21.56 GB (22.7% of the routed picks by the profile), loaded in 8.6 s, 1022 MiB free
+```
+
+A/B, same prompt ids and protocol as the Maya A/B (215 tokens, a 64-token warm-up, a measured 128-token
+answer), three runs each:
+
+| Arm | Measured decode, 128 tokens | Median |
+| --- | ---: | ---: |
+| `--gpus 0 --tp 1 --expert-cache-device1 auto`, cache sub 0.1 | 10.11 / 9.26 / 9.37 | **9.37 tok/s** |
+| TP2 + cache sub 0.1 (the current default) | 22.23 / 22.55 / 20.38 | **22.23 tok/s** |
+| the card arm in the faithful mode (no substitution), one run | 7.01 | - |
+
+That is **-58% against the current default**, so it is not adopted.  Two measured reasons:
+
+1. The card's compute path is **one-token windows only** (the PR says so under its limits).  Our default has
+   DSpark on, so every decode window carries 4-5 rows: the served requests report `CUDA1 (...) 0.1-0.5% of
+   the answer's experts`, i.e. the card holds 22.7% of the routed picks and computes almost none of them,
+   while the CPU lane still did 20-29%.
+2. The card topology gives up TP2: with `--gpus 0` the dense weights (5.95 GB read every token) go through
+   one card's memory bandwidth instead of two.  Adamyno's +30% compared one card alone (16.98 tok/s)
+   against one card plus the cache card; this box's baseline already uses both cards for every token.
+
+One thing the card arm does better: it reads the cold 215-token prompt at **24.5-26.3 tok/s** against
+11.7-22.5 for TP2 (a single card has no cross-card all-reduce on the short-prompt window path).  Decode
+dominates the totals, so it does not change the verdict.  The branch stays for a future test with
+`--dspark off`, where the card's 22.7% would actually be computed.
+
+### Run it
+
+```sh
+./start_ds4_gsq_2080ti.sh --ids "$(cat bench/ds4-baseline/prompt-13k.txt)" --n 128   # one CLI run
+./start_ds4_gsq_server.sh                                                            # API on 127.0.0.1:8000
+./stop_ds4_gsq.sh
+```
+
+Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, DSpark on, 32K
+context, cache substitution off).  The pack's own `expert-profile.bin` is used read-only.
+
+### Measured (2x RTX 2080 Ti 22G, 220 W, Xeon 20 threads, 256 GB, TP2, 4 experts, DSpark on)
+
+| What | Result |
+| --- | ---: |
+| Load to READY | 138-149 s (122.0 GB copied in 100-107 s, pinned in 5.5 s) |
+| VRAM | 24.9 GB of experts (2730 of 15360, 17.8%) + 7.9 GB weights; 40.2 GB of 44 GB used |
+| RAM for the CPU lane | 122.0 GB (14190 experts), 1 NUMA part |
+| Prefill, 13K prompt (warm: two chat requests first) | 429-437 tok/s |
+| Prefill, 3.5K prompt, first request after the load | 213.6 tok/s |
+| Decode, 128 tokens, warm, faithful | 11.4-13.3 tok/s |
+| Decode, 128 tokens, warm, `DS4_CACHE_SUB_RATIO=0.1` | **22.4-23.1 tok/s** (approximate: changes answers) |
+| Decode, 128 tokens, warm, 6 experts (full quality) | 7.7-8.7 tok/s |
+| Prefill, 6 experts | 420.6 tok/s |
+| API end to end, 300 tokens, `reasoning_effort: none` | 10.9 tok/s (engine: 11.83; 24-token prompt) |
+| API end to end, 300 tokens, `reasoning_effort: low` (config default) | 7.3 tok/s (two engine requests: 150-token think, then the answer) |
+
+The API path is slower than the bare engine numbers above for two measured reasons: it samples at
+temperature 0.3 (DSpark kept 60% of its drafts against 87% greedy), and "low" thinking sends the reasoning
+text back as a second prompt, which is read at the slow short-prompt rate (167 tokens at 17 tok/s).  With
+`reasoning_effort: none` one request stays single-phase at 11.8 tok/s in the engine.
+
+`DS4_AR2_DECODE=1 DS4_ATTN_V7=1` changed nothing measurable here (23.1 tok/s against 23.1).  The old
+hybrid-tuned set (`DS4_LAND=0`, `DS4_TP_SHARES=4,5`, `DS4_FAT_ROWS=64`, ...) was **worse** on this pack
+(11.5-14.9 tok/s): those switches belong to the streamed hybrid packs, not to a RAM copy.  Layer split
+(`--tp 1`) held 2161 experts instead of 2730 and gave 15.2 tok/s against 15.9 on a cold chat prompt.
+
+### Against Maya: a same-day A/B (2026-11-13)
+
+Both engines, same pack, same prompt ids (215 tokens, greedy), one load each: a 64-token warm-up request,
+then a measured 128-token one.  Six loads alternating (Maya, Strata, Maya, Strata, Maya, Strata), 128 GB
+pool on for both, cache substitution 0.1 in each engine's own config, each engine's own placement and
+drafter (Maya: layer split, DSpark off; Strata: TP2, DSpark on, learned profile):
+
+| What | Maya (3 runs) | Strata (3 runs) |
+| --- | ---: | ---: |
+| Warm decode, 128 tokens (median) | 16.51 / 16.78 / 16.59 -> **16.59 tok/s** | 22.23 / 22.55 / 20.38 -> **22.23 tok/s** |
+| First answer, 64 tokens (median) | 10.10 / 8.62 / 9.69 -> 9.69 tok/s | 15.45 / 15.80 / 14.80 -> 15.45 tok/s |
+| Cold 215-token prompt read | 18.3-22.4 s | 14.2-17.2 s |
+| Load to READY | 136-151 s | 141-144 s |
+
+So on this host today Strata is **+34% on warm decode** and about +59% on the first answer; prefill was
+already faster (430.6 against 328 tok/s at 6.5K above).  Maya with its DSpark config measured 16.62 tok/s
+in the same protocol (one run), i.e. the drafter does not change Maya's number here.
+
+Maya's own logs from the morning of the same day show 20.2-23.9 tok/s on 128-token answers
+(`maya-gsq-iq2xxs-tuned*.log`, `-autotp768.log`), so both engines are below their morning numbers on this
+now-day-old host; the A/B is what makes the two comparable, not either absolute figure.  The scripts are
+`bench/ds4-gsq/ab.sh` (one arm) and `ab_serve.py` (the shared --serve protocol); logs in
+`bench/ds4-gsq/ab/`.
+
+### 2 MB pages for this pack (128 GB pool, one root step)
+
+The CPU-lane copy is 122.0 GB, so the old 96 GB rule cannot hold it and the engine stays on ordinary
+pages (its own log says `the arena on 2 MB pages` only when the pool covers the whole copy).  A 128 GB
+rule is in `packaging/99-strata-hugepages-128.sudoers`; install it once as root:
+
+```sh
+sudo install -m 0440 -o root -g root packaging/99-strata-hugepages-128.sudoers \
+    /etc/sudoers.d/99-strata-hugepages-128
+sudo visudo -cf /etc/sudoers.d/99-strata-hugepages-128
+sudo -n /usr/local/sbin/strata-ds4-hugepages 128      # 65536 x 2 MB, passwordless after the rule
+```
+
+Then start normally: the engine takes the pool by itself (`DS4_COPY_HUGETLB` unset = on when the pool
+holds the whole copy).  Verify `HugePages_Total: 65536` and the engine's `the arena on 2 MB pages` line;
+`./stop_ds4_gsq.sh --release` gives the 128 GB back.
+
+**Measured with the pool on** (2026-11-13, 65536/65536 pages, the engine's `the arena on 2 MB pages` line
+present, same prompts and configs as the table above):
+
+| What | THP arena (pool off) | 2 MB pool on |
+| --- | ---: | ---: |
+| Load to READY | 138-149 s | 132-139 s |
+| Prefill, 13K prompt | 430.3 tok/s | 453.9 tok/s (+5.5%) |
+| Decode 128 tok, warm, faithful | 13.29 / 11.37 | 12.49 / 12.11 |
+| Decode 128 tok, warm, cache sub 0.1 | 23.08 / 23.07 | 24.93 / 23.21 (+4 to +8%) |
+
+So the pool is worth keeping for DS4 (faster load, a small prefill and decode gain, and no dependence on
+host fragmentation), but it is not the 11.9 s the engine's comment records for one prompt: that note says
+140 GB, and this box's prompt path is set by PCIe, not by page size.  A 13K prompt reads the CPU lane's
+122 GB to the GPU twice (two 8192-token chunks, ~244 GB) in 28.8 s, about 8.5 GB/s over PCIe 3.0 x16;
+4 KB pages gave 8.05 GB/s, i.e. 5%.  A 20 GB/s figure (11.9 s) is not reachable on this link.
+
+### Run it
+
+```sh
+./start_ds4_gsq_2080ti.sh --ids "$(cat bench/ds4-baseline/prompt-13k.txt)" --n 128   # one CLI run
+./start_ds4_gsq_server.sh                                                            # API on 127.0.0.1:8000
+./stop_ds4_gsq.sh
+```
+
+Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, DSpark on, 32K
+context, cache substitution off).  The pack's own `expert-profile.bin` is used read-only.
+
+### Measured (2x RTX 2080 Ti 22G, 220 W, Xeon 20 threads, 256 GB, TP2, 4 experts, DSpark on)
+
+| What | Result |
+| --- | ---: |
+| Load to READY | 138-149 s (122.0 GB copied in 100-107 s, pinned in 5.5 s) |
+| VRAM | 24.9 GB of experts (2730 of 15360, 17.8%) + 7.9 GB weights; 40.2 GB of 44 GB used |
+| RAM for the CPU lane | 122.0 GB (14190 experts), 1 NUMA part |
+| Prefill, 13K prompt (warm: two chat requests first) | 429-437 tok/s |
+| Prefill, 3.5K prompt, first request after the load | 213.6 tok/s |
+| Decode, 128 tokens, warm, faithful | 11.4-13.3 tok/s |
+| Decode, 128 tokens, warm, `DS4_CACHE_SUB_RATIO=0.1` | **22.4-23.1 tok/s** (approximate: changes answers) |
+| Decode, 128 tokens, warm, 6 experts (full quality) | 7.7-8.7 tok/s |
+| Prefill, 6 experts | 420.6 tok/s |
+| API end to end, 300 tokens, `reasoning_effort: none` | 10.9 tok/s (engine: 11.83; 24-token prompt) |
+| API end to end, 300 tokens, `reasoning_effort: low` (config default) | 7.3 tok/s (two engine requests: 150-token think, then the answer) |
+
+The API path is slower than the bare engine numbers above for two measured reasons: it samples at
+temperature 0.3 (DSpark kept 60% of its drafts against 87% greedy), and "low" thinking sends the reasoning
+text back as a second prompt, which is read at the slow short-prompt rate (167 tokens at 17 tok/s).  With
+`reasoning_effort: none` one request stays single-phase at 11.8 tok/s in the engine.
+
+`DS4_AR2_DECODE=1 DS4_ATTN_V7=1` changed nothing measurable here (23.1 tok/s against 23.1).  The old
+hybrid-tuned set (`DS4_LAND=0`, `DS4_TP_SHARES=4,5`, `DS4_FAT_ROWS=64`, ...) was **worse** on this pack
+(11.5-14.9 tok/s): those switches belong to the streamed hybrid packs, not to a RAM copy.  Layer split
+(`--tp 1`) held 2161 experts instead of 2730 and gave 15.2 tok/s against 15.9 on a cold chat prompt.
+
+### Against Maya on the same pack (2026-11-13)
+
+Maya's own logs (`maya-gsq-iq2xxs-launch.log`, `-dspark.log`; cache substitution 0.1, layer split), same
+box, same pack, and Strata with the 128 GB pool, cache substitution 0.1 and a profile the engine may
+update (see below):
+
+| What | Maya | Strata |
+| --- | ---: | ---: |
+| 6.5K prompt read | 20 s (328 tok/s); 23 s with dspark (285) | **15.1 s (430.6 tok/s)** |
+| 13K prompt read | not measured | 445-455 tok/s |
+| First answer, 256 tokens | 18.3 tok/s (91.7% cache hit) | 17.1 tok/s |
+| Warm decode, 128 tokens | 26.8 / 27.3 tok/s | **28.5 / 29.1 tok/s** |
+| Warm decode, 256 tokens | 18.3 first / 21.2 cold (dspark) | 24.6-26.1 |
+
+So: prefill is clearly faster here, the first answer is about the same (17.1 against 18.3), and warm decode
+is slightly faster.  All of these use the approximate cache substitution, which Maya's own config also has
+on; in the faithful mode (no substitution) Strata decodes at 11-13 tok/s, and no Maya run without
+substitution was found to compare against.  Single runs, different prompts, different engines: a same-day
+A/B of both engines on one prompt is what would settle it, and that has not been done.
+
+The last Strata column uses a **writable expert profile** (`ds4-gsq-expert-profile.bin`, started from the
+pack's): the engine calls `save_profile` after every request, so each run starts from the routing this host
+actually saw.  Measured across four runs, same prompt: 23.10 -> 25.41 -> 28.45 tok/s warm decode (first
+answer 12.49 -> 14.37 -> 13.17 in the same runs).  The launcher and the server config now use that file
+when it exists (the pack's own stays read-only otherwise).
+
+Limits: no quality run was made on this pack (the smoke question answers correctly; nothing was scored), so
+"4 experts" and the approximate cache substitution are speed choices without a measured quality delta.
+The numbers above are single runs after several earlier loads, on a host that has been up a day: the
+post-reboot fast state was not reproduced.  The raw-document 13K prompt now ends after one token (the
+model's own EOS), so decode is measured on a chat prompt; the old 128-token continuation on that prompt
+came with cache substitution on.
