@@ -94,7 +94,7 @@ exec "$BIN" \
     $PROFILE_ARGS \
     --gpus "${DS4_GPUS:-0,1}" \
     --tp "${DS4_TP:-2}" \
-    --max-context "${DS4_MAX_CONTEXT:-32768}" \
+    --max-context "${DS4_MAX_CONTEXT:-262144}" \
     --reserve-mib "${DS4_RESERVE_MIB:-768}" \
     --cpu-threads "${DS4_CPU_THREADS:-20}" \
     --mmap-experts "${DS4_MMAP_EXPERTS:-off}" \
