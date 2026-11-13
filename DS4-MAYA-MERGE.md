@@ -1414,6 +1414,7 @@ much between runs, so a single run cannot show a change under about 10%.
 | `DS4_DSPARK_CONF=0.3` | first 300-token API request 11.79 tok/s against 11.83 | no |
 | `DS4_COPY_THREADS=20` (a local knob, reverted) | load copy 111.9 s against 100-107 at 12 | no |
 | `STRATA_DS4_LOAD_DROP_CACHE=0` | load copy 107.2 s (the DONTNEED hints cost nothing) | no |
+| `DS4_CHUNK_MIN=64` (prompts from 64 tokens take the chunked path) | a 215-token prompt 15.07 s (14.3 tok/s) against 14.2-18.3 s in windows; the CPU lane's share fell from 26% to 6.6%, but the prompt still streams the CPU lane's 122 GB over PCIe, which is what the 14 s is | no |
 
 **Upstream PR #5765 (one-token IQ2_XXS / IQ2_XS / IQ1_M rows on AVX2)** was built into a second binary and
 run against the stock one, two runs each, in the faithful mode (no cache substitution), where the CPU lane
