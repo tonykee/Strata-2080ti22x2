@@ -1491,6 +1491,41 @@ One thing the card arm does better: it reads the cold 215-token prompt at **24.5
 dominates the totals, so it does not change the verdict.  The branch stays for a future test with
 `--dspark off`, where the card's 22.7% would actually be computed.
 
+### The drafter and the card, measured (2026-11-13, night)
+
+Two questions came out of the rejected cache-card arm: does the card win if it can actually compute (one-token
+windows, `--dspark off`), and does DSpark pay at all on this host?  Same protocol as the Maya A/B (215-token
+prompt, a 64-token warm-up, a measured 128-token answer).
+
+| Arm (3 runs unless noted) | Decode, 128 tokens | Median |
+| --- | ---: | ---: |
+| card, `--dspark off`, faithful | 8.64 / 8.72 / 8.65 | **8.65 tok/s** |
+| TP2, `--dspark off`, faithful (2 runs) | 13.76 / 14.98 | ~14.4 tok/s |
+| TP2, `--dspark on`, faithful | 11.03 / 12.31 / 11.00 | 11.03 tok/s |
+| TP2, `--dspark off`, substitution 0.1 (2 runs) | 18.09 / 16.61 | ~17.35 tok/s |
+| TP2, `--dspark on`, substitution 0.1 | 22.23 / 22.55 / 20.38 | 22.23 tok/s |
+| card + multi-row compute, `--dspark on`, substitution 0.1 | 9.84 / 10.18 / 10.96 | 10.18 tok/s |
+
+Findings:
+
+1. **The card loses even when it computes.**  The multi-row change (below) raises CUDA1 from 0.1-0.5% to
+   **8.1-17.9% of the answer's experts** with 19-36 ms waited a request, and the arm moves from 9.37 to
+   10.18 tok/s: +9%, still **-54% against TP2's 22.23**.  The single-card dense path (5.95 GB a token through
+   one card's bandwidth) is the cost, and the card cannot get it back.
+2. **DSpark's value depends on the substitution.**  Faithful (no substitution): the drafter costs 24%
+   (11.03 against 14.4).  With substitution 0.1 it pays 28% (22.23 against 17.35).  The reason is the CPU lane:
+   without substitution a verify window of 5 rows multiplies the CPU-lane picks; with it the picks are
+   VRAM-resident and shared.  **Adopted**: the launcher and the server config now turn the drafter off when
+   `DS4_CACHE_SUB_RATIO` is 0 (faithful) and on beside it - an explicit `DS4_DSPARK`/`--dspark` still wins.
+3. **The multi-row card change** (branch `ds4-cache-card`, commit `810064c68`): `lane_of` takes the card for
+   any window up to `kWin`, `card_launch` runs a plan + GEMM chain per row, `card_merge` adds each row's part;
+   the card's buffers are sized for `kWin` rows.  Kept on the experiment branch, not merged.
+
+Caveat: the card arms wrote the shared `ds4-gsq-expert-profile.bin` (the launcher makes it writable).  A
+profile learned under a single-card placement ranks experts for that placement, so it was restored from the
+pack's file after this round and TP2 retrains it; the TP2 numbers above were taken before the drift, the
+card ones after.  A future A/B should give each topology its own `DS4_PROFILE`.
+
 ### Run it
 
 ```sh
