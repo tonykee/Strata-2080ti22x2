@@ -1378,7 +1378,9 @@ sudo -n /usr/local/sbin/strata-ds4-hugepages 128      # 65536 x 2 MB, passwordle
 
 Then start normally: the engine takes the pool by itself (`DS4_COPY_HUGETLB` unset = on when the pool
 holds the whole copy).  Verify `HugePages_Total: 65536` and the engine's `the arena on 2 MB pages` line;
-`./stop_ds4_gsq.sh --release` gives the 128 GB back.
+`./stop_ds4_gsq.sh` stops the server and gives the 128 GB back (`--keep` holds the pool).  The
+launcher reserves the pool by itself now (`start_ds4_gsq_server.sh`: 128 GB unless `DS4_HUGEPAGE_GB=0`),
+so neither step needs a parameter.
 
 **Measured with the pool on** (2026-11-13, 65536/65536 pages, the engine's `the arena on 2 MB pages` line
 present, same prompts and configs as the table above):
@@ -1583,8 +1585,8 @@ Readings:
 
 ```sh
 ./start_ds4_gsq_2080ti.sh --ids "$(cat bench/ds4-baseline/prompt-13k.txt)" --n 128   # one CLI run
-./start_ds4_gsq_server.sh                                                            # API on 127.0.0.1:8000
-./stop_ds4_gsq.sh
+./start_ds4_gsq_server.sh    # API on 127.0.0.1:8000: reserves the 128 GB pool, starts, warms up
+./stop_ds4_gsq.sh            # stops and returns the pool (--keep holds it for the next start)
 ```
 
 Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **384K context**,
@@ -1656,7 +1658,9 @@ sudo -n /usr/local/sbin/strata-ds4-hugepages 128      # 65536 x 2 MB, passwordle
 
 Then start normally: the engine takes the pool by itself (`DS4_COPY_HUGETLB` unset = on when the pool
 holds the whole copy).  Verify `HugePages_Total: 65536` and the engine's `the arena on 2 MB pages` line;
-`./stop_ds4_gsq.sh --release` gives the 128 GB back.
+`./stop_ds4_gsq.sh` stops the server and gives the 128 GB back (`--keep` holds the pool).  The
+launcher reserves the pool by itself now (`start_ds4_gsq_server.sh`: 128 GB unless `DS4_HUGEPAGE_GB=0`),
+so neither step needs a parameter.
 
 **Measured with the pool on** (2026-11-13, 65536/65536 pages, the engine's `the arena on 2 MB pages` line
 present, same prompts and configs as the table above):
@@ -1678,8 +1682,8 @@ host fragmentation), but it is not the 11.9 s the engine's comment records for o
 
 ```sh
 ./start_ds4_gsq_2080ti.sh --ids "$(cat bench/ds4-baseline/prompt-13k.txt)" --n 128   # one CLI run
-./start_ds4_gsq_server.sh                                                            # API on 127.0.0.1:8000
-./stop_ds4_gsq.sh
+./start_ds4_gsq_server.sh    # API on 127.0.0.1:8000: reserves the 128 GB pool, starts, warms up
+./stop_ds4_gsq.sh            # stops and returns the pool (--keep holds it for the next start)
 ```
 
 Configs: `tools/strata-ds4-gsq-2080ti.json` (server), launcher defaults (TP2, 4 experts, **384K context**,
