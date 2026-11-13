@@ -40,7 +40,7 @@ else
 fi
 
 # This tree only: do not touch production /home/likan/strata or the Qwen engine.
-SERVER_PAT="[/]home/likan/strata-latest/serve/server.py.*strata-ds4-v2-2080ti.json"
+SERVER_PAT="[/]home/likan/strata-latest/serve/server.py.*strata-ds4-(v2|gsq)-2080ti.json"
 ENGINE_PAT="[/]home/likan/strata-latest/build-dsv41/strata-dsv41 --serve"
 if command -v pgrep >/dev/null 2>&1; then
     for pat in "$SERVER_PAT" "$ENGINE_PAT"; do

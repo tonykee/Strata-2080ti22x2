@@ -23,12 +23,16 @@ constexpr size_t native_act_bytes_for(int64_t n) {
 }
 /// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292); never below the
 /// 4096 of the Flash-Next engine, and it grows with the compiled hidden size (4096 values need 4672).
+/// The DeepSeek V4.1 engine is built beside it for a 5120-wide hidden state by default (--pack's ds4.txt), whose
+/// gate/up activation is 20 x 292 = 5840 as Q8_K: without the 8192 floor its GGUF CPU-lane experts refuse to load
+/// ("activation larger than the pool's buffers"). The buffers are per token, so the wider floor costs 4 KB a token.
 inline constexpr size_t kNativeActBytes =
-    native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) > 4096 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) : 4096;
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) > 8192 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) : 8192;
 /// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292); never below 1024,
-/// and it grows with the compiled expert width (1024 values as Q8_K need 1168).
+/// and it grows with the compiled expert width (1024 values as Q8_K need 1168). The 4096 floor covers DeepSeek
+/// V4.1's 2304-wide expert (9 x 292 = 2628 as Q8_K).
 inline constexpr size_t kNativeHBytes =
-    native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 1024 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 1024;
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 4096 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 4096;
 
 /// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
 enum class NativeArithmetic { Default, WindowInvariant };

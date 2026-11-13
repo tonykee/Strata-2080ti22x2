@@ -69,5 +69,12 @@ if [ "${STRATA_WARMUP:-0}" != "0" ]; then
         if curl -sf -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then break; fi
         sleep 5
     done
-    timeout 600 "$PY" tools/warmup_ds4.py --url "http://127.0.0.1:$PORT" --rounds "${STRATA_WARMUP_ROUNDS:-2}" || true
+    # The server's API key: a config that sets one answers 401 without it (the warm-up then did nothing).
+    WARMUP_KEY=${STRATA_API_KEY:-}
+    if [ -z "$WARMUP_KEY" ]; then
+        WARMUP_KEY=$("$PY" -c "import json; print(json.load(open('$CONFIG')).get('api_key') or '')" 2>/dev/null || true)
+    fi
+    set -- --url "http://127.0.0.1:$PORT" --rounds "${STRATA_WARMUP_ROUNDS:-2}"
+    [ -n "$WARMUP_KEY" ] && set -- "$@" --key "$WARMUP_KEY"
+    timeout 600 "$PY" tools/warmup_ds4.py "$@" || true
 fi
