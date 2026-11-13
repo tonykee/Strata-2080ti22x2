@@ -1526,6 +1526,41 @@ profile learned under a single-card placement ranks experts for that placement, 
 pack's file after this round and TP2 retrains it; the TP2 numbers above were taken before the drift, the
 card ones after.  A future A/B should give each topology its own `DS4_PROFILE`.
 
+### Prefill: where the time goes, and what does not help (2026-11-13, night)
+
+`DS4_PROF=1` prints the prompt path's GPU time by stage.  A 13,058-token prompt, one process a row:
+
+| Config | Prompt | attention | routing + shared | experts (with the waits) | between layers |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TP2 (the default) | 30.9 s (422 tok/s) | 1.4 s | 0.8 s | **24.2 s** | 0.3 s |
+| TP2, `--prefill-chunk 16384` | 36.0 s (363) | **13.2 s** | 0.8 s | 28.0 s | 0.03 s |
+| TP2, `DS4_RING_MB=1024` | 32.0 s (408) | 1.4 s | 0.8 s | 29.3 s | 0.3 s |
+| TP2, `DS4_RING_MB=link` (the 8.6-8.7 GB/s probe) | 40.4 s (323) | 1.4 s | 0.8 s | 50.4 s | 0.06 s |
+| TP2, `DS4_HIP_PEER_AR=0` | 45.9 s (285) | 16.9 s | 0.8 s | 39.6 s | 0.4 s |
+| `--tp 1` (layer split) | 30.2 s (432) | 0.3 s | 0.8 s | 12.4 s | 0.2 s |
+| one card (`--gpus 0 --tp 1`) | **26.3 s (497)** | 0.2 s | 0.5 s | 9.6 s | 0.01 s |
+
+(the unprotected runs of the same config read 445-455 tok/s; the profile adds a few percent)
+
+Readings:
+
+1. **Prefill is the expert stream, not attention.**  With 8K chunks a 13K prompt streams the CPU lane's
+   experts twice: 2 x (122.0 - 24.9) GB = 194 GB, and 24.2 s is 8.0 GB/s over the two links.  Attention is
+   1.4 s, the router 0.8 s.
+2. **A 16K chunk halves the passes and loses anyway**: the attention jumps 1.4 -> 13.2 s and the stream
+   slows (its buffers also take 866 VRAM experts, 2730 -> 1864).  Measured end to end earlier as 366.6
+   against 450 tok/s.
+3. **The ring and the peer all-reduce are already the right settings**: `DS4_RING_MB=link` sizes the ring
+   from its own 8.6-8.7 GB/s probe and is 30% slower; a bigger ring is 3% slower; turning the peer
+   all-reduce off costs 44% (and its host transport shows up as 16.9 s of attention).
+4. **The two-card stream is the headroom.**  One card moves the same kind of data at ~13-14 GB/s while TP2
+   gets ~4 GB/s per card; a single card prefills 13K at 497 tok/s against TP2's 450 (+10-15%), and a
+   215-token prompt at 8.2 s against 14-20 s (about 1.7x).  Its decode is 9-10 tok/s against TP2's 22, so it
+   is not the default; `DS4_GPUS=0 DS4_TP=1 ./start_ds4_gsq_2080ti.sh` is the prefill-heavy option.
+5. **Prompt length stops mattering past ~200 tokens**: a 31-token prompt reads in 2.4 s, a 215-token one in
+   14-20 s, 13K in 29 s, because from a couple of hundred tokens up the routing touches nearly every expert
+   and the pass streams the whole CPU lane.
+
 ### Run it
 
 ```sh
