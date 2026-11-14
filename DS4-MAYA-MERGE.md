@@ -1692,6 +1692,22 @@ the smaller of the cores and `--cpu-threads - 1`).  The prompt lookup / suffix d
 (the engine builds the lookup only when the drafter is on), so with DSpark off there is no suffix
 speculation - it is not a separate switch.
 
+### CPU lane threads above the physical cores (2026-11-15)
+
+`--cpu-threads N` used to be capped by the lane's "cores" list (one CPU per physical core: 10 here), so
+`--cpu-threads 16` still ran 10 workers.  `make_pools()` now switches to the "smt" list (every logical CPU)
+when the count asked for is above the physical cores, capped by the count; the start says so:
+
+```text
+ds4: --cpu-threads 16 is above the 10 physical cores: the CPU lane runs on the logical CPUs (SMT), up to 16 threads
+ds4: 13297 routed experts on the CPU lane (114.4 GB): ... 16 threads
+```
+
+Measured on the UD-IQ1_M deployment (TP1, 384K, no DSpark, vision): 10 threads 17.4 -> 19.7 tok/s greedy
+(200 tokens, warm); **16 threads 20.0 -> 21.3 tok/s greedy and 21.3 at temperature 0.3** (CPU lane 15% ->
+12.6%).  Within the run spread on the greedy numbers, but not worse - the engine's own tuner never picks
+SMT (its calls time the same on a core's two CPUs), so this needs the explicit count, which is what it has.
+
 ### Run it
 
 ```sh

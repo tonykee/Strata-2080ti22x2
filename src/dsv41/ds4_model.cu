@@ -7519,6 +7519,23 @@ struct Model::Impl {
         if (const char* v = std::getenv("STRATA_DS4_CPU_LANE"))
             for (size_t i = 0; i < cfgs.size(); ++i)
                 if (cfgs[i].name == v) pick = i;
+        // --cpu-threads above this host's physical cores asks for the siblings too: the logical CPUs' list (SMT),
+        // capped by the count asked for (one of them is the service thread).  By hand only: the lane's own tuner
+        // never picks this list (its calls time the same on a core's two CPUs), so an explicit count is what
+        // brings it in.
+        if (o.cpu_threads > 0 && pick == 0 && std::getenv("STRATA_DS4_CPU_LANE") == nullptr) {
+            size_t cores = 0;
+            for (const auto& cv : cfgs[0].cpus) cores += cv.size();
+            if ((size_t) o.cpu_threads > cores) {
+                for (size_t i = 1; i < cfgs.size(); ++i)
+                    if (cfgs[i].name == "smt") {
+                        pick = i;
+                        std::fprintf(stderr, "ds4: --cpu-threads %d is above the %zu physical cores: the CPU lane runs "
+                                             "on the logical CPUs (SMT), up to %d threads\n", o.cpu_threads, cores, o.cpu_threads);
+                        break;
+                    }
+            }
+        }
         lane_name = cfgs[pick].name;
         pools = pools_for(cfgs[pick]);
         (void) gg::mx_tier();   // (measured here, not on the first token)
