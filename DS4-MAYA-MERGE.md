@@ -1610,6 +1610,35 @@ Two things this box needed:
    (cache substitution 0.1 + drafter) still uses `DS4_PACK=.../maya-ds4-iq2xxs-dspark`, at ~1300 fewer
    VRAM experts.
 
+### 30 tokens a second: the fast mode (2026-11-14)
+
+The target was 30 tok/s on the GSQ-RCO IQ2_XXS.  Measured on two protocols, 32K unless said (the earlier
+28.5/29.1 came from a 31-token code prompt with a long-trained profile; the 215-token A/B reads lower):
+
+| Arm (serve, greedy) | 31-token code prompt, 128 tok | 215-token prompt, 128 tok |
+| --- | ---: | ---: |
+| 4 experts, cache sub 0.1, 384K | 18.4 | 20.5-22.8 |
+| 4 experts, cache sub 0.1, 32K | 25.3 / 25.9 (28.5-29.1 on 2026-11-13) | 20.5 / 20.7 / 22.2 / 20.5 |
+| 4 experts, cache sub 0.2, 32K | - | 19.3 / 20.9 |
+| **3 experts, cache sub 0.2, 32K** | **33.1 / 29.9** | 24.8 |
+| 3 experts, cache sub 0.1, 32K | 34.0 / 27.9 | - |
+
+So the only arm that reaches about 30 tok/s is **3 of the 6 experts** (the app's Faster mode is 5, and the
+4-expert mode we ran until now is already below it) **with the approximate cache substitution at 0.2**.
+That is a quality cut on top of a quality cut; it is a separate config, not a new default:
+
+```sh
+DS4_CONFIG=./tools/strata-ds4-gsq-2080ti-fast.json ./start_ds4_gsq_server.sh
+```
+
+`tools/strata-ds4-gsq-2080ti-fast.json`: the DSpark pack, `--dspark on`, `--experts 3`, `--max-context
+32768`, `DS4_CACHE_SUB_RATIO=0.2`, and the separate `ds4-gsq-expert-profile-fast.bin` (trained under this
+placement).  The default config stays the vision pack at 384K, text-faithful with 4 experts.
+
+What did not move it: dropping 384K to 32K is worth ~4% (the CPU lane's share fell 27% -> 23%); cache
+substitution 0.2 at 4 experts was inside the spread; the profile's toe reaches its plateau after about
+four runs (20.5-22.2 on the 215-token prompt).
+
 ### Run it
 
 ```sh
