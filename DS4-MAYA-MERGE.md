@@ -1708,6 +1708,26 @@ Measured on the UD-IQ1_M deployment (TP1, 384K, no DSpark, vision): 10 threads 1
 12.6%).  Within the run spread on the greedy numbers, but not worse - the engine's own tuner never picks
 SMT (its calls time the same on a core's two CPUs), so this needs the explicit count, which is what it has.
 
+### IQ2_XXS against UD-IQ1_M, identical settings (2026-11-15)
+
+Both packs: TP1 (layer split, two cards balanced), 16 CPU threads (the SMT list), DSpark **off**, vision
+resident, 384K, cache substitution off, the 128 GB 2 MB pool.  Each was warmed with several 200-token
+answers before the numbers below (the expert profile learns the placement).
+
+| | GSQ-RCO IQ2_XXS | Unsloth UD-IQ1_M |
+| --- | ---: | ---: |
+| VRAM, after load | 21,479 / 21,466 MiB (balanced) | 21,641 / 21,624 MiB |
+| CPU lane | 113.4 GB (13,187 experts) | 114.4 GB (13,297) |
+| Decode 200 tokens, greedy (warm) | **21.6 / 23.3 tok/s** (CPU 12.5% / 11.8%) | 20.0-21.3 (CPU 15% -> 12.6%) |
+| Decode 200 tokens, temperature 0.3 | 19.7-20.0 | **21.3** |
+| Prefill, 9,743-token prompt | 325.7 tok/s (29.9 s) | **373.0 tok/s** (26.1 s) |
+| Vision | `VISION OK 42` | `VISION OK 42` |
+| 2 MB arena | yes | yes |
+
+So the two are close: IQ2_XXS is ~8-10% faster on a warm greedy decode, UD-IQ1_M is ~13% faster on a
+long prompt (and on the sampled 0.3 path).  Neither dominates; the choice is decode-heavy (IQ2_XXS) or
+long-prompt/sampled (UD-IQ1_M).
+
 ### Run it
 
 ```sh
