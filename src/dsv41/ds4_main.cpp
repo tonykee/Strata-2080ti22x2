@@ -311,27 +311,32 @@ bool round(strata::ds4::Model& m, int tok, int room, bool spec, float conf_min, 
     out.clear();
     offered = accepted = 0;
     const double t_round0 = rt_now();
-    if (spec && room > 1 && m.draft_block() > 0) {
+    // DSpark drafts and/or the prompt lookup (the suffix drafter).  The lookup can carry a round on its own when
+    // the engine runs without the drafter (DS4_LOOKUP_ALONE=1, serve(); the CLI always builds it): the block below
+    // already falls through to the lookup-alone window when no MTP draft passed the floor.
+    if (room > 1 && ((spec && m.draft_block() > 0) || lk != nullptr)) {
         std::vector<int> drafts;
         std::vector<float> conf;
-        ++g_rt.rounds;
-        static const bool tl_init = (tl_gate(false), true);
-        (void) tl_init;
-        tl_gate(true);
         const double rt0 = rt_now();
-        const unsigned long long rs0 = rt_seq();
-        if (!m.draft(tok, drafts, conf, err, temperature, top_p, top_k, min_p, seed, counter)) return false;
-        g_rt.draft += rt_now() - rt0;
-        tl_gate(false);
-        g_rt.draft_d += rt_seq() - rs0;
-        g_round_conf = conf;
-        g_round_nd = (int) drafts.size();
         int keep = 0;
-        if (cum_min < 0) cum_min = dspark_cum_default(m);
-        float cum = 1.0f;
-        while (keep < (int) drafts.size() && keep < room - 1 && keep < g_spec_depth && conf[(size_t) keep] >= conf_min &&
-               (cum *= conf[(size_t) keep]) >= cum_min)
-            ++keep;
+        if (spec && m.draft_block() > 0) {
+            ++g_rt.rounds;
+            static const bool tl_init = (tl_gate(false), true);
+            (void) tl_init;
+            tl_gate(true);
+            const unsigned long long rs0 = rt_seq();
+            if (!m.draft(tok, drafts, conf, err, temperature, top_p, top_k, min_p, seed, counter)) return false;
+            g_rt.draft += rt_now() - rt0;
+            tl_gate(false);
+            g_rt.draft_d += rt_seq() - rs0;
+            g_round_conf = conf;
+            g_round_nd = (int) drafts.size();
+            if (cum_min < 0) cum_min = dspark_cum_default(m);
+            float cum = 1.0f;
+            while (keep < (int) drafts.size() && keep < room - 1 && keep < g_spec_depth && conf[(size_t) keep] >= conf_min &&
+                   (cum *= conf[(size_t) keep]) >= cum_min)
+                ++keep;
+        }
         int lk_match = 0, lk_k = 0;
         bool from_lk = false;
         int keep_mtp = 0, chain_k = 0, chain_match = 0;
@@ -638,7 +643,11 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
           int suffix_draft = 0, int lookup_chain = 0) {
     std::vector<int> eos = parse_ids(eos_list);
     std::unique_ptr<Lookup> lk;   // (one policy over the engine's life, as Maya's prompt lookup)
-    if (spec && suffix_draft > 0)
+    static const bool lookup_alone = [] {   // DS4_LOOKUP_ALONE=1: the suffix lookup runs without DSpark
+        const char* v = std::getenv("DS4_LOOKUP_ALONE");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
+    if ((spec || lookup_alone) && suffix_draft > 0)
         lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
     if (m.seq_count() > 1)   // (--parallel: n conversations at once, GEN rid=<id>)
