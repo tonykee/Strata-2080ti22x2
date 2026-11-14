@@ -17,13 +17,15 @@
 #   DS4_EXPERTS=N           experts per token (4 measured; 6 full quality, slower)
 #   DS4_TP/N, DS4_GPUS, DS4_MAX_CONTEXT, DS4_RESERVE_MIB, DS4_PREFILL_CHUNK
 #   DS4_PROFILE=FILE|none   expert profile (default: the pack's own expert-profile.bin)
+#   DS4_PACK=DIR            the pack (default: maya-ds4-iq2xxs-vision, pictures and no DSpark;
+#                           ...-dspark keeps the drafter at ~1300 fewer VRAM experts)
 #   Before repeated reloads, reserve the 2 MB pool once (needs a password):
 #     sudo tools/ds4_hugepages.sh 96 --persist
 #   and export DS4_COPY_HUGETLB=1; without it the copy uses ordinary THP.
 cd /home/likan/strata-latest || exit 1
 
 BIN=${STRATA_DS4_BIN:-./build-dsv41/strata-dsv41}
-PACK=${DS4_PACK:-/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-dspark}
+PACK=${DS4_PACK:-/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-vision}
 
 if [ ! -x "$BIN" ]; then
     echo "Strata DS4 engine not found at $BIN; build build-dsv41/strata-dsv41 first." >&2

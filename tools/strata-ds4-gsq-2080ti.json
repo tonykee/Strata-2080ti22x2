@@ -4,7 +4,7 @@
   "exe": "/home/likan/strata-latest/build-dsv41/strata-dsv41",
   "args": [
     "--pack",
-    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-dspark",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-vision",
     "--expert-profile",
     "/home/likan/strata-latest/ds4-gsq-expert-profile.bin",
     "--gpus",
@@ -23,6 +23,7 @@
     "4",
     "--prefill-chunk",
     "8192",
+    "--vision-resident",
     "--dspark",
     "off"
   ],

@@ -1581,6 +1581,35 @@ Readings:
    14-20 s, 13K in 29 s, because from a couple of hundred tokens up the routing touches nearly every expert
    and the pass streams the whole CPU lane.
 
+### Pictures: the vision tower added (2026-11-14)
+
+The GSQ-RCO shards carry no vision tensors (`--pack-info`: `vision 0.00`), so the pack ran text only
+(`/health` said `"images": false`).  The tower is a separate shared file: `mmproj-BF16.gguf`, 972,208,288
+bytes (Unsloth's, projector deepseek41v), now in the GSQ-RCO folder, and the new pack
+`maya-ds4-iq2xxs-vision` is built from the same five shards + Engram + that mmproj (no DSpark - see below):
+
+```text
+pack-info: dense 117.73 GB (embed 0.46, head 0.46, mtp 0.00, vision 0.97, engram 110.81)
+           files: 7, all present and long enough
+```
+
+Measured: load ~3 min, `/health` -> `"images": true`, and a 768x320 PNG reading `VISION OK / 42` answered
+exactly `VISION OK 42` (189 prompt tokens, 6 generated).
+
+Two things this box needed:
+
+1. **`--vision-resident`.**  The lazy tower takes 318 MiB only while a picture is read, but at load both
+   cards keep ~190 MiB free (reserve 768 MiB is used by the chunk buffers), and the engine's lend-the-
+   experts path found "0 MiB set aside", so a picture got a 400.  Resident keeps the tower on CUDA0 at
+   load: experts **3854** (1927 + 1927) against 4006 without the tower, i.e. 152 experts (1.3 GB) for
+   pictures.
+2. **The DSpark pack's mtp tensors cost VRAM even with `--dspark off`**: the first build included
+   Unsloth's `dspark-...-Q8_0.gguf` (7.97 GB) and the expert count fell to 686 (535 + 151) - the engine
+   places the mtp weights whether or not the drafter runs.  The vision pack leaves them out; decode went
+   from 11.32 to **11.96 tok/s** (200 tokens, temperature 0.3) with 3854 experts.  The fast mode
+   (cache substitution 0.1 + drafter) still uses `DS4_PACK=.../maya-ds4-iq2xxs-dspark`, at ~1300 fewer
+   VRAM experts.
+
 ### Run it
 
 ```sh
