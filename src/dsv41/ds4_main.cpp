@@ -647,8 +647,16 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const char* v = std::getenv("DS4_LOOKUP_ALONE");
         return v != nullptr && std::atoi(v) != 0;
     }();
-    if ((spec || lookup_alone) && suffix_draft > 0)
-        lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
+    if ((spec || lookup_alone) && suffix_draft > 0) {
+        // The lookup-alone window is verified by Model::verify, which reuses the window state the drafter's
+        // draft() sets up; without a drafter that state is not there and the verify faults (measured: illegal
+        // memory access at its first sample).  So the lookup needs a pack with the drafter, whatever the env says.
+        if (m.draft_block() > 0)
+            lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
+        else if (lookup_alone)
+            std::fprintf(stderr, "ds4: DS4_LOOKUP_ALONE: this pack has no drafter; the lookup's window verify needs the "
+                                 "drafter's window state and would fault, so the prompt lookup stays off\n");
+    }
     for (const std::string& l : m.info_lines()) std::printf("%s\n", l.c_str());
     if (m.seq_count() > 1)   // (--parallel: n conversations at once, GEN rid=<id>)
         std::printf("READY %lld stop multi=%d\n", (long long) m.max_context(), m.seq_count());
@@ -2772,7 +2780,9 @@ int main(int argc, char** argv) {
     if (!o.vision_only) std::fprintf(stderr, "%s", m.describe().c_str());
     if (const char* idle = std::getenv("DS4_TEST_IDLE_MS")) std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(idle)));   // (tests: a person typing)
     std::unique_ptr<Lookup> lk;   // (the CLI's prompt lookup; the server's is wired in serve())
-    if (!serve_mode && suffix_draft > 0)
+    // (a lookup window is verified through the drafter's window state: without a drafter in the pack it faults, so
+    // the lookup stays off - see serve()'s note)
+    if (!serve_mode && suffix_draft > 0 && m.draft_block() > 0)
         lk = std::make_unique<Lookup>(suffix_draft, m.verify_max(), (size_t) m.max_context() + 4096, lookup_chain);
     if (serve_mode) return serve(m, eos, spec, o.dspark_conf, o.pack, suffix_draft, lookup_chain);
     const int window_given = window;
