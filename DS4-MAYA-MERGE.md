@@ -1662,6 +1662,36 @@ CPU lane's tail (one expert a layer on 10 cores, ~0.5 ms each) - the structural 
 experts do not fit in 44 GB of VRAM.  Closing it needs the cache card with TP2 kept (a new path, not
 written) or more VRAM, not a kernel tweak.
 
+### UD-IQ1_M deployed: TP1 to balance the cards (2026-11-15)
+
+The UD-IQ1_M v3.1 pack (`maya-ds4-ud-iq1m-vision`, 1.95 bpw, vision tower, no DSpark) runs with
+`--tp 1` (layer split) because **TP2 cannot balance this pack**: TP2 gives every layer's experts the same
+count on both cards, and the card that also carries the head and the vision tower runs out first, so the
+other keeps several GB free (measured: CUDA0 12.67 GB of experts, 181 MiB free; CUDA1 6.13 GB, 7388 MiB
+free; the CPU lane held 121.2 GB).  `DS4_TP_SHARES=4,5` made it worse (CPU lane 131.2 GB).  With `--tp 1`
+the layers split 0-21 / 22-39 and both cards fill:
+
+```text
+nvidia-smi: GPU0 21,641 MiB of 22,528, GPU1 21,624 MiB   (17 MiB apart)
+ds4: CUDA0 layers [0, 21]: weights 3.71 GB, experts 13.94 GB, caches 0.36 GB, 513 MiB free
+ds4: CUDA1 layers [22, 39] + head: weights 3.17 GB, experts 15.26 GB, caches 0.15 GB, 530 MiB free
+ds4: 13297 routed experts on the CPU lane (114.4 GB)   (TP2: 14080 / 121.2 GB)
+```
+
+Measured in this balanced layout (no DSpark, 384K, 4 experts, vision resident, cache substitution off):
+
+| What | Result |
+| --- | ---: |
+| Decode 200 tokens, greedy (warm) | 17.4 -> **19.7 tok/s** (CPU lane 17% -> 13.4%) |
+| Decode 200 tokens, temperature 0.3 | 13.24 tok/s (engine), 11.8 wall |
+| Prefill, 4,814-token prompt | 20.5 s = **235 tok/s** |
+| Vision | a 768x320 PNG reads `VISION OK 42` |
+
+Two notes: `--cpu-threads 16` still runs the lane's **10** workers (one per physical core; the engine uses
+the smaller of the cores and `--cpu-threads - 1`).  The prompt lookup / suffix drafter needs `--dspark on`
+(the engine builds the lookup only when the drafter is on), so with DSpark off there is no suffix
+speculation - it is not a separate switch.
+
 ### Run it
 
 ```sh
