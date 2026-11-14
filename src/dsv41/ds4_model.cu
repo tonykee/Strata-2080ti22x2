@@ -3637,7 +3637,9 @@ struct Model::Impl {
                 !dalloc(d, d.n_groups, 4, err))
                 return false;
             if (g.n_mtp > 0 && !dalloc(d, d.tap, (size_t) tap_cap * D, err)) return false;
-            if (g.n_mtp > 0 && (int) di == head_dev &&
+            // (always: Model::verify's window path uses them, and a prompt lookup can verify a window with no
+            //  drafter in the pack - the lookup-alone mode; tiny, 64 ints + kWin floats + kWin spec lists)
+            if ((int) di == head_dev &&
                 (!dalloc(d, d_confv, kWin, err) || !dalloc(d, d_ints, 64, err) || !dalloc(d, d_specq, kWin, err)))
                 return false;
             CK(cudaEventCreateWithFlags(&d.ev_out, cudaEventDisableTiming));
