@@ -1639,6 +1639,29 @@ What did not move it: dropping 384K to 32K is worth ~4% (the CPU lane's share fe
 substitution 0.2 at 4 experts was inside the spread; the profile's toe reaches its plateau after about
 four runs (20.5-22.2 on the 215-token prompt).
 
+### Code-level attempts at 4 experts + substitution 0.1 + 384K (2026-11-14)
+
+The 30 tok/s target was not reachable by configuration at 4 experts, so three engine-level changes were
+measured against the same workload (31-token code prompt, greedy, 128 tokens, load each time):
+
+| Change | Result |
+| --- | ---: |
+| CPU lane on every logical CPU (`STRATA_DS4_CPU_LANE=smt`, 20 threads) | **15.7** against 25.3 / 25.9 (10 cores): the lane's rows are compute-bound, the SMT siblings only add contention - the engine's comment says the same |
+| Router lookahead `DS4_LOOKAHEAD=2` (off by default) | 29.32 / 26.90: inside the spread of 25.3-29.1, not adopted |
+| **Decode all-reduce on the peer transport** (`DS4_PEER_AR_DECODE=1`, new, opt-in): a verify window's two all-reduces go over NVLink (47.1 GB/s measured) instead of the host bounce | 15.57 / 15.97 against 15.39 / 15.64 host (A/B, download paused): **+1.6%**, inside the noise; kept as an opt-in, not enabled |
+
+The decode all-reduce is a new `decode_allreduce()` beside `chunk_allreduce()`: the same peer slots the
+prefill uses (320 MiB a rank, a window is 160 KB), the host path unchanged when the peer setup is absent
+or the env is unset.  The peer kernel's sums are the same as the host transport's (the AR selftest recorded
+0 mismatches in the merge notes); the generated text differs run to run because cache substitution depends
+on residency, not because of the transport.
+
+Where the decode time actually goes at this setting (`DS4_DECODE_TIMING`, 384K, 4 experts, sub 0.1):
+layers 17.5 ms, **head wait 24.9 ms**, engram 0.2 ms, drafting ~10 ms a token; the head wait is mostly the
+CPU lane's tail (one expert a layer on 10 cores, ~0.5 ms each) - the structural cost of a pack whose
+experts do not fit in 44 GB of VRAM.  Closing it needs the cache card with TP2 kept (a new path, not
+written) or more VRAM, not a kernel tweak.
+
 ### Run it
 
 ```sh

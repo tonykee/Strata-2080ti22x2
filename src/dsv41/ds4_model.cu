@@ -7096,6 +7096,11 @@ struct Model::Impl {
             nh += l.n_exp - l.n_vram;
             hb_ += (size_t) (l.n_exp - l.n_vram) * l.blob;
         }
+        if (std::getenv("DS4_DBG_MTP")) {   // (the drafter's 3 blocks: how many of their experts got a VRAM slot)
+            for (const Layer& l : L)
+                if (l.mtp)
+                    std::fprintf(stderr, "ds4: DBG mtp il %d dev %d n_vram %d of %d\n", l.il, l.dev, l.n_vram, l.n_exp);
+        }
         if (std::getenv("DS4_PLACE_HASH")) {   // debugging: which experts hold a VRAM slot, as one hash (is the placement the same from run to run?)
             uint64_t h = 1469598103934665603ull;
             for (const Layer& l : L)
@@ -12090,6 +12095,22 @@ struct Model::Impl {
         return on;
     }
 
+    // A decode window's all-reduce: the peer (NVLink) transport where init_peer_ar set it up, the host transport
+    // otherwise.  A verify window is at most kWin rows (kWin * D floats = 160 KB), well inside the peer slots
+    // (320 MiB a rank, sized for an 8192-token chunk); prefill and decode never run at the same time, so they may
+    // share the slots.  The peer kernel sums the same values in the same order (the AR selftest: 0 mismatches).
+    void decode_allreduce(Dev& d, const ArGroup& ag, int mi, int n, float* buf, cudaStream_t s) {
+#if !defined(STRATA_USE_HIP)
+        static const bool peer = [] {   // DS4_PEER_AR_DECODE=1 (opt-in until measured): the NVLink transport for decode too
+            const char* v = std::getenv("DS4_PEER_AR_DECODE");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
+        Group& pg = groups[(size_t) d.grp];
+        if (peer && pg.peer_arb_on && allreduce_peer(buf, n, pg.peer_arb[(size_t) mi], mi, ++d.ar_seq, s)) return;
+#endif
+        allreduce(buf, n, ag, mi, ++d.ar_seq, d.xcnt, s);
+    }
+
     // A chunk's all-reduce: the peer transport where it was set up, the host transport otherwise.
     void chunk_allreduce(Dev& d, Chunk& c, const ArGroup& ab, int mi, int n, float* buf, cudaStream_t s) {
 #if !defined(STRATA_USE_HIP)
@@ -14897,7 +14918,7 @@ struct Model::Impl {
             if (!mv(d, {job(l.wo_b, d.oa, d.ao, T, (size_t) OG * g.o_lora, D)}, err)) return false;
         } else CK(cudaMemsetAsync(d.ao, 0, (size_t) T * D * sizeof(*d.ao), s));   // (no heads: nothing to add)
         dump_sub(d, "ao", l.il, p0, T, d.ao, (size_t) T * D * 4);
-        if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
+        if (nm > 1) decode_allreduce(d, ag, mi, T * D, d.ao, s);
         hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
         std::swap(d.h, d.h2);
         if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, 1000 + l.il, p0, T);   // (DS4_DUMP_L: after the attention)
@@ -15100,7 +15121,7 @@ struct Model::Impl {
                 }
             }
             if (lead) st.experts += (int64_t) T * l.k_exp;
-            if (nm > 1) allreduce(d.moe_out, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
+            if (nm > 1) decode_allreduce(d, ag, mi, T * D, d.moe_out, s);
             hc_post(d.moe_out, d.h, d.f_post, d.f_comb, D, H, T, d.h2, s);
             std::swap(d.h, d.h2);
             CK(cudaMemcpyAsync(d.pre, d.f_pre, (size_t) T * 8 * 4, cudaMemcpyDeviceToDevice, s));
