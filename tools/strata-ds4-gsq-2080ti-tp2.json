@@ -1,0 +1,71 @@
+{
+  "arch": "deepseek41",
+  "backend": "cuda",
+  "exe": "/home/likan/strata-latest/build-dsv41/strata-dsv41",
+  "args": [
+    "--pack",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-vision",
+    "--expert-profile",
+    "/home/likan/strata-latest/ds4-gsq-expert-profile.bin",
+    "--gpus",
+    "0,1",
+    "--tp",
+    "2",
+    "--max-context",
+    "393216",
+    "--reserve-mib",
+    "768",
+    "--cpu-threads",
+    "16",
+    "--mmap-experts",
+    "off",
+    "--experts",
+    "4",
+    "--prefill-chunk",
+    "8192",
+    "--vision-resident",
+    "--dspark",
+    "off"
+  ],
+  "cwd": "/home/likan/strata-latest",
+  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-dspark/tokenizer",
+  "model_name": "deepseek-v4.1-flash-gsq-rco-iq2_xxs-tp1",
+  "log": "/home/likan/strata-latest/strata-ds4-gsq-tp2-engine.log",
+  "host": "0.0.0.0",
+  "port": 8000,
+  "api_key": "llama_local",
+  "gpu": [
+    0,
+    1
+  ],
+  "gpus_asked": true,
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/lib64"
+  ],
+  "sampling": {
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "top_k": 15,
+    "min_p": 0.02,
+    "repetition_penalty": 1.05,
+    "penalty_last_n": 512
+  },
+  "reasoning_effort": "low",
+  "env": {
+    "DS4_ENGRAM_CACHE_MB": "2048",
+    "DS4_SETTLE_MS": "2000",
+    "DS4_STREAM_ZC": "1",
+    "DS4_STREAM_WIN": "1",
+    "DS4_LAND": "1",
+    "DS4_IQ1S_ROWS": "1",
+    "DS4_IQ_OWN": "1",
+    "DS4_HIP_PEER_AR": "1",
+    "DS4_COPY_PIN": "1",
+    "DS4_COPY_PUMP": "1",
+    "DS4_STORE_GB": "0",
+    "DS4_CACHE_SUB_RATIO": "0",
+    "DS4_CACHE_SUB_N": "12",
+    "DS4_CACHE_SUB_RISK_BUDGET": "0.6",
+    "DS4_CACHE_SUB_NORM": "reference"
+  }
+}

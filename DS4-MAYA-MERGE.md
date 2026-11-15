@@ -1942,3 +1942,24 @@ load is the slow one; the profile learns from the real requests, not from the 10
 says why.  The UD pack has no shipped profile; its local profile was reset to the IQ2 chat-warmed one
 (same 15,360 expert ids) and has not been measured on UD yet.  The background model check/download was
 paused for these runs; with it running the numbers may be lower.
+
+## TP2 is the faster IQ2_XXS decode (2026-11-15)
+
+TP1 keeps the cards balanced but holds only 2,173 experts in VRAM; TP2 holds 1,927 + 1,927 =
+**3,854** (each card's dense weights halve).  Both cards are ~97% full (21,815 / 21,498 MiB, 317 MiB
+apart), not the 7 GB imbalance of the DSpark pack.  Same profile, 16 threads, 384K, 4 experts, lookup
+on, 200-token greedy answers:
+
+| Config | Decode, four warm answers | 13K prefill |
+| --- | ---: | ---: |
+| TP1 | 16.4 / 20.6 / 22.1 / 22.0 tok/s | 373-381 tok/s |
+| **TP2** | 16.3 / 22.7 / 22.8 / **24.4** tok/s | 373.7 tok/s |
+
+TP2 is about 10% faster when warm, and its 13K prefill matches TP1.  `--cpu-threads 20` (all logical
+CPUs) is much worse: 9.9 / 13.8 / 15.3 / 16.2; 16 threads (15 workers + the service thread) stays.
+`DS4_PEER_AR_DECODE=1` (NVLink decode all-reduce) is flat: 16.7 / 23.4 / 24.9 / 24.1, within the run
+spread.  The config is `tools/strata-ds4-gsq-2080ti-tp2.json`.
+
+The 10K warm-up still reads 13K at 373.7 tok/s, but it retrains the writable profile toward the
+warm-up text: a chat answer right after it fell to 12.1 / 15.5 tok/s.  The start script now skips it
+by default (see the previous section); a few real answers do the placement better.
