@@ -35,7 +35,7 @@ export DS4_LOOKUP_ALONE
 # no warm-up, and 20.9 / 21.8 / 22.7 after two to four real answers.  Leave it off unless you want the
 # prefill placement measured; the first real requests do the profile learning better.
 # Reachable from the LAN (0.0.0.0) with the config's API key; STRATA_HOST=127.0.0.1 keeps it local.
-DS4_CONFIG=${DS4_CONFIG:-./tools/strata-ds4-gsq-2080ti.json} \
+DS4_CONFIG=${DS4_CONFIG:-./tools/strata-ds4-gsq-2080ti-tp2.json} \
 DS4_HUGEPAGE_GB=0 \
 DS4_LOG=${DS4_LOG:-./strata-ds4-gsq-server.log} \
 STRATA_WARMUP=${STRATA_WARMUP:-0} \
