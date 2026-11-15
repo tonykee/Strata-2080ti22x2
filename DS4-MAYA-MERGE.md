@@ -1923,3 +1923,22 @@ paragraph" prompt): 7.41 / 7.43 / 7.52 tok/s with the lookup off against 8.89 / 
 24-25 rounds, 91-92 of 92 drafts kept; all six runs produced the same 120 token ids. In `--serve` with
 `DS4_LOOKUP_ALONE=1`: 120 tokens in 8.1 s, 77 of 77 drafts kept. Details and the memory cost:
 [docs/DS4_PROMPT_LOOKUP.md](docs/DS4_PROMPT_LOOKUP.md).
+
+## The expert profile and the 10K warm-up (2026-11-15)
+
+The 20 tok/s decode came back after a regression to 11.8-13.4: the writable expert profile
+(`ds4-gsq-expert-profile.bin`) had been retrained by the server's 10K-token warm-up and the long
+repeated-text runs, and it routed 24.7% of the expert calls to the CPU lane.  The per-token profile
+showed layers 16.4 ms, CPU lane 54.8, **head wait 67.0 ms**; the earlier 20 tok/s runs had 12.5% CPU
+and head wait 24.9 ms.
+
+With the pack's shipped profile (`maya-ds4-iq2xxs-vision/expert-profile.bin`) and no 10K warm-up, the
+same IQ2_XXS config (TP1, 16 threads, 384K, 4 experts, lookup off in the CLI) ran 200 tokens at
+16.8 / 20.9 / 21.8 / 22.7 tok/s over four answers, CPU lane 15.6%, head wait 45.5 ms.  The final
+server config with the prompt lookup on measured 16.4 / 20.6 / 22.1 / 22.0.  The first answer after a
+load is the slow one; the profile learns from the real requests, not from the 10K benchmark text.
+
+`start_ds4_gsq_server.sh` now leaves the 10K warm-up off by default (`STRATA_WARMUP=1` asks for it) and
+says why.  The UD pack has no shipped profile; its local profile was reset to the IQ2 chat-warmed one
+(same 15,360 expert ids) and has not been measured on UD yet.  The background model check/download was
+paused for these runs; with it running the numbers may be lower.

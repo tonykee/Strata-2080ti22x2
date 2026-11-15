@@ -1,9 +1,9 @@
 #!/bin/sh
 # Start the GSQ-RCO DeepSeek-V4.1 server (OpenAI + Anthropic API, port 8000) on 2x RTX 2080 Ti.
-# Reserves the 128 GB 2 MB huge-page pool first (passwordless helper), starts the server, then warms it.
-#   ./start_ds4_gsq_server.sh                      # reserve 128 GB if needed, start, warm up
+# Reserves the 128 GB 2 MB huge-page pool first (passwordless helper), starts the server, and returns.
+#   ./start_ds4_gsq_server.sh                      # reserve 128 GB if needed, start
 #   DS4_HUGEPAGE_GB=0 ./start_ds4_gsq_server.sh    # no reservation (ordinary pages)
-#   STRATA_WARMUP=0 ./start_ds4_gsq_server.sh      # skip the ~107 s warm-up
+#   STRATA_WARMUP=1 ./start_ds4_gsq_server.sh      # the ~107 s warm-up too (see the note below)
 # Stop with ./stop_ds4_gsq.sh (it returns the pool to the system) or `--keep` to hold it.
 cd /home/likan/strata-latest || exit 1
 
@@ -30,9 +30,13 @@ fi
 DS4_LOOKUP_ALONE=${DS4_LOOKUP_ALONE:-1}
 export DS4_LOOKUP_ALONE
 
+# The 10K-token warm-up retrains a writable expert profile toward the warm-up text: measured on IQ2_XXS
+# (TP1, 16 threads, 384K, 4 experts), the first 200-token answer then ran at 13 tok/s against 16.8 with
+# no warm-up, and 20.9 / 21.8 / 22.7 after two to four real answers.  Leave it off unless you want the
+# prefill placement measured; the first real requests do the profile learning better.
 # Reachable from the LAN (0.0.0.0) with the config's API key; STRATA_HOST=127.0.0.1 keeps it local.
 DS4_CONFIG=${DS4_CONFIG:-./tools/strata-ds4-gsq-2080ti.json} \
 DS4_HUGEPAGE_GB=0 \
 DS4_LOG=${DS4_LOG:-./strata-ds4-gsq-server.log} \
-STRATA_WARMUP=${STRATA_WARMUP:-1} \
+STRATA_WARMUP=${STRATA_WARMUP:-0} \
     exec ./start_cpu_lane.sh --host "${STRATA_HOST:-0.0.0.0}" "$@"
