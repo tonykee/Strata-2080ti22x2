@@ -4,9 +4,11 @@ The DeepSeek-V4.1-Flash engine can draft from the prompt lookup alone, with no D
 needs no extra model and no extra graphics memory. This page records the engine change, how to turn it on, and
 what it measured on two RTX 2080 Ti.
 
-**Status:** the CLI uses it when `--suffix-draft` is above 0 (default 3); `serve()` needs
-`DS4_LOOKUP_ALONE=1`. `--suffix-draft 0` turns it off. In the greedy runs below the 120 output token ids were
-identical with the lookup off and on, so the drafts do not change the answer.
+**Status:** on by default in the launchers. The CLI builds the lookup when `--suffix-draft` is above 0
+(default 3), and `start_ds4_gsq_server.sh` / `start_ds4_gsq_2080ti.sh` export `DS4_LOOKUP_ALONE=1`, which
+`serve()` needs. `--suffix-draft 0` turns the lookup off; `DS4_LOOKUP_ALONE=0` turns off the server's switch.
+In the greedy runs below the 120 output token ids were identical with the lookup off and on, so the drafts do
+not change the answer.
 
 ## What it does
 
@@ -43,7 +45,7 @@ prompt.
 - `d_ints`, `d_confv` and `d_specq` are allocated on the head card whether or not the pack has a drafter
   (src/dsv41/ds4_model.cu). They are a few KB; the verify path needs them for every window.
 
-The three commits are `8625f5809`, `1ddf636df` and `95d11cd66` on the `ds4-cuda-prefill` branch (the second was
+The three commits are `8625f5809`, `1ddf636df` and `b3554113f` on the `ds4-cuda-prefill` branch (the second was
 an intermediate guard that the third replaced).
 
 ## Turning it on
@@ -51,11 +53,19 @@ an intermediate guard that the third replaced).
 CLI:
 
 ```sh
-./start_ds4_gsq_2080ti.sh --ids "..." --n 120 --suffix-draft 3
+./start_ds4_gsq_2080ti.sh --ids "..." --n 120          # --suffix-draft 3 is the default
+DS4_SUFFIX_DRAFT=0 ./start_ds4_gsq_2080ti.sh ...       # the lookup off
 ```
 
-Server: export `DS4_LOOKUP_ALONE=1` (or add it to the config's `env`) and pass `--suffix-draft 3` in the args.
-`--suffix-draft 0` turns the lookup off.
+Server:
+
+```sh
+./start_ds4_gsq_server.sh                              # DS4_LOOKUP_ALONE=1 by default
+```
+
+When the engine or `serve/server.py` is started without these scripts, add `DS4_LOOKUP_ALONE=1` to the
+environment (or to the config's `env`) and pass `--suffix-draft 3` in the args. A config with
+`--suffix-draft 0` turns the lookup itself off.
 
 ## Measured
 

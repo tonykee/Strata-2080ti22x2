@@ -1905,8 +1905,9 @@ so the first lookup window faulted (`illegal memory access` at `d_ints + 16`); t
 `--suffix-draft 0` ran.
 
 `8625f5809` lets `round()` run the block for a lookup without MTP drafts and builds the lookup in `serve()` for
-`DS4_LOOKUP_ALONE=1`; `95d11cd66` allocates the three verify buffers on the head card always (a few KB). The CLI
-uses the lookup whenever `--suffix-draft > 0` (default 3).
+`DS4_LOOKUP_ALONE=1`; `b3554113f` allocates the three verify buffers on the head card always (a few KB). The CLI
+uses the lookup whenever `--suffix-draft > 0` (default 3); both launchers now export `DS4_LOOKUP_ALONE=1`, so the
+server starts with it too (`DS4_SUFFIX_DRAFT=0` turns the CLI lookup off).
 
 Measured on UD-IQ1_M (TP2, 20 threads, 32K, 4 experts, no drafter, greedy, 120 tokens on a "repeat this
 paragraph" prompt): 7.41 / 7.43 / 7.52 tok/s with the lookup off against 8.89 / 9.19 / 12.93 with it on;

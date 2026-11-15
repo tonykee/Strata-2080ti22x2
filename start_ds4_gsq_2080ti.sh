@@ -19,6 +19,9 @@
 #   DS4_PROFILE=FILE|none   expert profile (default: the pack's own expert-profile.bin)
 #   DS4_PACK=DIR            the pack (default: maya-ds4-iq2xxs-vision, pictures and no DSpark;
 #                           ...-dspark keeps the drafter at ~1300 fewer VRAM experts)
+#   DS4_SUFFIX_DRAFT=N      the prompt lookup's shortest match (default 3; 0 turns the lookup off);
+#                           the lookup runs without DSpark, and DS4_LOOKUP_ALONE=0 (serve) turns its
+#                           environment switch off
 #   Before repeated reloads, reserve the 2 MB pool once (needs a password):
 #     sudo tools/ds4_hugepages.sh 96 --persist
 #   and export DS4_COPY_HUGETLB=1; without it the copy uses ordinary THP.
@@ -57,6 +60,10 @@ export DS4_CACHE_SUB_RATIO=${DS4_CACHE_SUB_RATIO:-0}
 export DS4_CACHE_SUB_N=${DS4_CACHE_SUB_N:-12}
 export DS4_CACHE_SUB_RISK_BUDGET=${DS4_CACHE_SUB_RISK_BUDGET:-0.6}
 export DS4_CACHE_SUB_NORM=${DS4_CACHE_SUB_NORM:-reference}
+
+# The prompt lookup runs without DSpark; the CLI builds it for --suffix-draft > 0 (default 3), and
+# --serve needs this environment switch.
+export DS4_LOOKUP_ALONE=${DS4_LOOKUP_ALONE:-1}
 
 # The drafter pays only where the cache substitution keeps the CPU lane small.  Measured 2026-11-13
 # (same 215-token prompt, warm-up + 128-token answer, 3 runs): faithful (no substitution) 11.03 tok/s
@@ -103,4 +110,5 @@ exec "$BIN" \
     --experts "${DS4_EXPERTS:-4}" \
     --prefill-chunk "${DS4_PREFILL_CHUNK:-8192}" \
     --dspark "${DS4_DSPARK:-on}" \
+    --suffix-draft "${DS4_SUFFIX_DRAFT:-3}" \
     "$@"

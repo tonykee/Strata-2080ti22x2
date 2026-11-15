@@ -25,6 +25,11 @@ if [ "$HUGEGB" -gt 0 ] 2>/dev/null; then
     fi
 fi
 
+# The prompt lookup (the suffix drafter) runs without DSpark: on by default here.  DS4_LOOKUP_ALONE=0
+# turns it off; a config with --suffix-draft 0 turns the lookup itself off.
+DS4_LOOKUP_ALONE=${DS4_LOOKUP_ALONE:-1}
+export DS4_LOOKUP_ALONE
+
 # Reachable from the LAN (0.0.0.0) with the config's API key; STRATA_HOST=127.0.0.1 keeps it local.
 DS4_CONFIG=${DS4_CONFIG:-./tools/strata-ds4-gsq-2080ti.json} \
 DS4_HUGEPAGE_GB=0 \
