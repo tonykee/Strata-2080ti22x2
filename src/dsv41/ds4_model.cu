@@ -5688,7 +5688,9 @@ struct Model::Impl {
                 }
             }
             if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
-            if (g.n_mtp > 0 && !l.mtp) {
+            // (always: Model::verify's window path keeps its rollback rows here, and a prompt lookup can verify a
+            //  window with no drafter in the pack - the lookup-alone mode; under a megabyte a card)
+            if (!l.mtp) {
                 if (!dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err)) return false;
                 // (--parallel: a multi step's verify windows share the window's rows - the ring's backups and the
                 //  compressor's rows by row - and each its own compressor snapshot, one a conversation; Project Maya #611)
