@@ -1963,3 +1963,24 @@ spread.  The config is `tools/strata-ds4-gsq-2080ti-tp2.json`.
 The 10K warm-up still reads 13K at 373.7 tok/s, but it retrains the writable profile toward the
 warm-up text: a chat answer right after it fell to 12.1 / 15.5 tok/s.  The start script now skips it
 by default (see the previous section); a few real answers do the placement better.
+
+## UD-IQ1_M on TP2 (2026-11-15)
+
+The same treatment as IQ2_XXS: `tools/strata-ds4-ud-iq1m-tp2.json` (TP2, 16 threads, 384K, 4
+experts, vision, lookup on).  TP2 holds 1,824 + 1,824 = **3,648** experts in VRAM against TP1's 2,173;
+the cards are 21,835 / 21,640 MiB (195 MiB apart, both ~97%).  The local UD profile was seeded from the
+IQ2 chat-warmed one (the UD pack ships no profile) and learned the UD routing over the answers.
+
+200-token greedy answers, no 10K warm-up:
+
+| Request | TP1 | **TP2** |
+| ---: | ---: | ---: |
+| 1 | 14.6 | 12.2 |
+| 2 | 18.5 | 17.1 |
+| 3 | 17.6 | 19.4 |
+| 4 | - | 20.7 |
+| 5-8 | - | 20.9 / 20.3 / 21.3 / **22.2** |
+
+CPU lane fell from 28.6% on the first TP2 answer to 15.9% by the eighth.  The UD pack is ~8% behind
+IQ2_XXS on TP2 (larger dense weights and 206 fewer VRAM experts), but it is over 20 tok/s warm.  The
+first answer after a load is the slow one; the profile learns from the real requests.
