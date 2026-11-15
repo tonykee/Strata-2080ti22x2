@@ -34,6 +34,12 @@ maya-ds4: cudaMemcpyAsync(h_idx, d_ints + 16, ...): an illegal memory access was
 The same prompt with `--suffix-draft 0` ran normally, so the fault was the lookup window, not the model or the
 prompt.
 
+Fixing that exposed a second MTP-only allocation. The verify window keeps its rollback rows in `ring_bak`, and the
+compressor's state in `c_snap` / `c_rows`; those were allocated only when `g.n_mtp > 0` too. A short prompt never
+wraps the KV ring and does not write the rollback rows, so the 120-token runs passed. A long prompt does: 32,645 and
+52,232 tokens both died after two tokens with the same illegal memory access. The 47,221-token request that reported
+the failure is this case.
+
 ## The change
 
 - `round()` (src/dsv41/ds4_main.cpp) runs the drafting block when the lookup exists as well as when DSpark does.
@@ -44,9 +50,11 @@ prompt.
   `--suffix-draft N` is above 0, as it did before.
 - `d_ints`, `d_confv` and `d_specq` are allocated on the head card whether or not the pack has a drafter
   (src/dsv41/ds4_model.cu). They are a few KB; the verify path needs them for every window.
+- The verify window's rollback rows (`ring_bak`) and the compressor's snapshot (`c_snap`, `c_rows`) are allocated
+  for every non-MTP layer, not only when the pack has a drafter. They are under a megabyte a card.
 
-The three commits are `8625f5809`, `1ddf636df` and `b3554113f` on the `ds4-cuda-prefill` branch (the second was
-an intermediate guard that the third replaced).
+The four commits are `8625f5809`, `1ddf636df`, `b3554113f` and `e2f2dfcee` on the `ds4-cuda-prefill` branch (the
+second was an intermediate guard that the third replaced; the fourth adds the rollback rows above).
 
 ## Turning it on
 
@@ -89,6 +97,20 @@ generated in 8.1 s (14.75 tok/s) and kept 77 of 77 drafts. That run reused the p
 from the prefix cache) and the cards were warmer, so the number is not comparable with the CLI table above; it
 shows that the server path builds and uses the lookup.
 
+### Long prompts
+
+Same box, TP1 (layer split), 16 CPU threads, 393,216 context, 4 experts, greedy, `--serve`. The prompt is the
+13K benchmark text repeated, 32,645 and 52,232 tokens.
+
+| Prompt tokens | `--suffix-draft` | Decode | Prompt lookup |
+| ---: | ---: | ---: | --- |
+| 32,645 | 3 | 16 tokens, 15.18 tok/s | 8 of 12 drafts kept |
+| 52,232 | 0 | 32 tokens, 8.33 tok/s | - |
+| 52,232 | 3 | 32 tokens, 14.15 tok/s | 19 of 24 drafts kept |
+
+The 52,232-token runs produced the same 32 token ids with the lookup off and on. Before `e2f2dfcee`, both long
+prompts with the lookup on died after two tokens; the 52,232-token prompt with `--suffix-draft 0` ran normally.
+
 The prose case was not measured with and without the lookup here. The policy chooses by expected value and
 leaves the lookup off where a match is short or its acceptance is low; the lookup claims copied text (code
 edits, quotes, templates). DSpark, when the pack has it, still drafts on novel text; the lookup is not a
@@ -96,8 +118,8 @@ replacement for it.
 
 ## Cost
 
-- No model weights. The lookup itself uses no GPU memory; the verify buffers above are a few KB and are now
-  allocated even without a drafter.
+- No model weights. The lookup itself uses no GPU memory; the verify buffers above are a few KB and the rollback
+  rows under a megabyte a card, allocated even without a drafter.
 - Host memory: the suffix index is a fixed hash table sized from the context, about 4 MiB at 32K and about
   34 MiB at 384K, for the one lookup the engine keeps.
 - The proposal is a host-side hash lookup. It runs inside a verify round the engine would run anyway.
@@ -108,6 +130,8 @@ replacement for it.
   with up to 7 drafts (8 rows).
 - It pays on copied text; on prose it usually has no match and the engine takes a plain step.
 - `--lookup-chain N` extends a DSpark window; with no drafter only the lookup-alone window runs.
+- The long-prompt fix was measured at 32K and 52K tokens; the same allocation covers longer prompts, but no
+  separate 128K or 256K soak was run.
 - Not ported: upstream `#4040 --lookup-max-t` (lookup windows up to 16 tokens, +19% on edits in Maya's notes).
   This branch's window cap is the head's 8 rows.
 

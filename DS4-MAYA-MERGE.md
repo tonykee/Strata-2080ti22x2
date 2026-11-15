@@ -1909,6 +1909,15 @@ so the first lookup window faulted (`illegal memory access` at `d_ints + 16`); t
 uses the lookup whenever `--suffix-draft > 0` (default 3); both launchers now export `DS4_LOOKUP_ALONE=1`, so the
 server starts with it too (`DS4_SUFFIX_DRAFT=0` turns the CLI lookup off).
 
+A long prompt found a second MTP-only allocation: `ring_bak` / `c_snap` / `c_rows` (the verify window's rollback
+rows and the compressor's snapshot) were also allocated only for `g.n_mtp > 0`. A 120-token prompt does not wrap
+the KV ring; 32,645 and 52,232 tokens do, and the lookup run died after two tokens with the same illegal access.
+`e2f2dfcee` allocates them for every non-MTP layer (under a megabyte a card).
+
+Long prompts (TP1, 16 threads, 393,216 context, same pack, `--serve`): 32,645 tokens -> 16 tokens, 15.18 tok/s,
+8 of 12 drafts kept; 52,232 tokens -> 32 tokens, 14.15 tok/s, 19 of 24 kept, the same 32 ids as the run with
+`--suffix-draft 0` (8.33 tok/s). This fixes the 47,221-token request that failed with the engine restart.
+
 Measured on UD-IQ1_M (TP2, 20 threads, 32K, 4 experts, no drafter, greedy, 120 tokens on a "repeat this
 paragraph" prompt): 7.41 / 7.43 / 7.52 tok/s with the lookup off against 8.89 / 9.19 / 12.93 with it on;
 24-25 rounds, 91-92 of 92 drafts kept; all six runs produced the same 120 token ids. In `--serve` with
