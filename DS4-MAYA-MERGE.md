@@ -1895,3 +1895,21 @@ The numbers above are single runs after several earlier loads, on a host that ha
 post-reboot fast state was not reproduced.  The raw-document 13K prompt now ends after one token (the
 model's own EOS), so decode is measured on a chat prompt; the old 128-token continuation on that prompt
 came with cache substitution on.
+
+## Prompt lookup without DSpark (2026-11-15)
+
+The lookup was unreachable in the DS4 engine without the drafter: `serve()` built it only for `spec`, and
+`round()` entered its drafting block only for `spec && draft_block() > 0`. Forcing it on found a second
+problem: `Model::verify` reads `d_ints` / `d_confv` / `d_specq`, which were allocated only for `g.n_mtp > 0`,
+so the first lookup window faulted (`illegal memory access` at `d_ints + 16`); the same prompt with
+`--suffix-draft 0` ran.
+
+`8625f5809` lets `round()` run the block for a lookup without MTP drafts and builds the lookup in `serve()` for
+`DS4_LOOKUP_ALONE=1`; `95d11cd66` allocates the three verify buffers on the head card always (a few KB). The CLI
+uses the lookup whenever `--suffix-draft > 0` (default 3).
+
+Measured on UD-IQ1_M (TP2, 20 threads, 32K, 4 experts, no drafter, greedy, 120 tokens on a "repeat this
+paragraph" prompt): 7.41 / 7.43 / 7.52 tok/s with the lookup off against 8.89 / 9.19 / 12.93 with it on;
+24-25 rounds, 91-92 of 92 drafts kept; all six runs produced the same 120 token ids. In `--serve` with
+`DS4_LOOKUP_ALONE=1`: 120 tokens in 8.1 s, 77 of 77 drafts kept. Details and the memory cost:
+[docs/DS4_PROMPT_LOOKUP.md](docs/DS4_PROMPT_LOOKUP.md).
