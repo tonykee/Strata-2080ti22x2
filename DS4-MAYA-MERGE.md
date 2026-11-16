@@ -1984,3 +1984,44 @@ IQ2 chat-warmed one (the UD pack ships no profile) and learned the UD routing ov
 CPU lane fell from 28.6% on the first TP2 answer to 15.9% by the eighth.  The UD pack is ~8% behind
 IQ2_XXS on TP2 (larger dense weights and 206 fewer VRAM experts), but it is over 20 tok/s warm.  The
 first answer after a load is the slow one; the profile learns from the real requests.
+
+## 2026-11-16: memory-bandwidth re-test and GSQ-RCO tuning
+
+The host-memory failure described above (the 90 GB CPU-lane copy falling back to 4 KB pages, CPU lane
+40-96 ms/token) did not reproduce after the memory fix.  Same pack (`maya-ds4-iq2xxs-vision`), TP2,
+4 experts, 384K, `--mmap-experts off`, one load per run, `bench/ds4-gsq/serve_bench.py` (31-token
+code chat, 13K prefill, 128-token answers):
+
+| Arm | Load | 13K prefill | decode, 2nd request | copy |
+|---|---:|---:|---:|---:|
+| 9 CPU threads, 128 GB 2 MB pool | 80 s | 560.8 tok/s | 25.9 tok/s | 56.7 s |
+| **10 CPU threads, 128 GB 2 MB pool** | 79 s | **565.8** | **27.5** | 56.7 s |
+| 16 CPU threads, 128 GB 2 MB pool | 82 s | 571.5 | 25.7 | - |
+| 10 CPU threads, no pool (ordinary THP) | 90 s | 577.4 | 25.9 | 63.6 s |
+| 10 CPU threads, `--prefill-chunk 16384` | 82 s | 508.8 | 23.2 | - |
+
+`AnonHugePages` stayed at 0 with the pool; the engine logged `the reserved huge-page pool ... holds the
+whole copy ... the arena on 2 MB pages`.  The no-pool run is now close (26.6/25.9) instead of the old
+11-13 tok/s, so the fix is in the host state/engine, not only in the pool; the pool still saves ~7 s of
+copy and ~2% decode, and keeps reloads repeatable.  Keep the 128 GB pool and **10 CPU threads**;
+`--prefill-chunk 16384` is worse (508.8 vs 565.8), so 8192 stays.
+
+### Faster arms (GSQ-RCO, 2x 2080 Ti)
+
+Measured the same way, same load.  Cache substitution is approximate and changes answers; the DSpark
+arm uses `maya-ds4-iq2xxs-dspark` (no vision) and its drafter.
+
+| Arm | 13K prefill | decode, 2nd request |
+|---|---:|---:|
+| faithful, vision pack, 4 experts, 10 threads | 565.8 | **27.5** |
+| 4 experts, cache sub 0.1, DSpark off (vision pack) | 570.6 | 37.2 |
+| 4 experts, cache sub 0.1, DSpark on | 564.1 | **39.0** |
+| 4 experts, cache sub 0.2, DSpark on | 568.0 | 39.5 |
+| 3 experts, cache sub 0.2, DSpark on, 32K | 595.9 | **45.8** |
+
+The first answer of each run is colder (23-30 tok/s even in the fast arms); the table uses the second
+128-token answer.  The 3-expert arm is a deliberate quality cut on top of the approximate routing and
+a 32K context; the faithful default stays 4 experts, 384K, DSpark off.
+
+The fast config (`tools/strata-ds4-gsq-2080ti-fast.json`) now uses 10 CPU threads as well.  The default
+server config `tools/strata-ds4-gsq-2080ti-tp2.json` is the faithful 4-expert arm at 10 threads.

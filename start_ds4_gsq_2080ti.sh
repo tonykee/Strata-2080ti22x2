@@ -105,7 +105,7 @@ exec "$BIN" \
     --tp "${DS4_TP:-2}" \
     --max-context "${DS4_MAX_CONTEXT:-393216}" \
     --reserve-mib "${DS4_RESERVE_MIB:-768}" \
-    --cpu-threads "${DS4_CPU_THREADS:-20}" \
+    --cpu-threads "${DS4_CPU_THREADS:-10}" \
     --mmap-experts "${DS4_MMAP_EXPERTS:-off}" \
     --experts "${DS4_EXPERTS:-4}" \
     --prefill-chunk "${DS4_PREFILL_CHUNK:-8192}" \
