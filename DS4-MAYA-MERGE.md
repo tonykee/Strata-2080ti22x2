@@ -2025,3 +2025,13 @@ a 32K context; the faithful default stays 4 experts, 384K, DSpark off.
 
 The fast config (`tools/strata-ds4-gsq-2080ti-fast.json`) now uses 10 CPU threads as well.  The default
 server config `tools/strata-ds4-gsq-2080ti-tp2.json` is the faithful 4-expert arm at 10 threads.
+
+The DSpark drafter's VRAM cost is in the same runs: 4006 experts in VRAM without it (2003 a card) against
+2536 with it (1460 + 1076) - **1470 fewer, about 10.4 GB** - plus 0.79 GB more non-expert weights.  It buys
+39.0 against 37.2 tok/s, so the 4-expert cache-sub 0.1 arm is the faster option that keeps the expert set and
+vision.  The prompt lookup runs in every arm (it needs no drafter); a repetitive prompt through the live
+faithful server kept 44 of 48 drafts (92-100% by position) and decoded at 41.3 tok/s on the copied text.
+`tools/strata-ds4-gsq-2080ti-fast-nodspark.json` is that 37.2 arm (vision pack, 4 experts, 384K, cache sub
+0.1, `--dspark off`) with `--vision-resident` added so pictures keep working; it costs the 152 experts of the
+resident tower but no drafter.  All four configs now carry `DS4_LOOKUP_ALONE=1`, so the lookup also runs when
+the server is started without the launchers.
