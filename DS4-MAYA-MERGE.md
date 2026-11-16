@@ -2035,3 +2035,37 @@ faithful server kept 44 of 48 drafts (92-100% by position) and decoded at 41.3 t
 0.1, `--dspark off`) with `--vision-resident` added so pictures keep working; it costs the 152 experts of the
 resident tower but no drafter.  All four configs now carry `DS4_LOOKUP_ALONE=1`, so the lookup also runs when
 the server is started without the launchers.
+
+## 2026-11-16: the last config knobs, and where the upstream went
+
+Three A/Bs on the current GSQ-RCO pack (`maya-ds4-iq2xxs-vision`), TP2, 4 experts, 384K, 10 CPU
+threads, 128 GB pool, `bench/ds4-gsq/serve_bench.py`, one load each:
+
+| Arm | 13K prefill | decode, 2nd request | VRAM experts |
+|---|---:|---:|---:|
+| faithful (default) | 565.8 | 27.5 | 2003/card |
+| `DS4_ATTN_SPLIT=1` | 588.9 | 25.8 | 2003 |
+| cache sub 0.1, no DSpark | 570.6 | 37.2 | 2003 |
+| cache sub 0.1 + `DS4_ATTN_SPLIT=1` | 588.9 | 36.9 | 2003 |
+| `--prefill-chunk 4096` | 527.6 | 26.4 | 2213 |
+
+The split-KV attention is the +9% arm in the 2026-11-10 note at 13K *decode* (37.11 -> 40.45); this bench
+answers a 31-token chat, where it is neutral (27.7/25.8 against 27.0/27.5; 31.3/36.9 against 30.7/37.2).
+The prefill column moves with the host state, not with the decode split; the split stays off for the
+faithful default.  The 4K prompt chunk buys 210 experts a card but reads the 13K prompt slower (527.6
+against 565.8) and decodes no faster; 8192 stays.
+
+**Upstream.** `Niko1221/Strata`'s main branch removed DeepSeek in 0.2.14 (`DeepSeek out` 1/7-7/7), so DS4's
+live upstream is Project Maya (`/mnt/kioxia/maya`, v1.1.61).  The NVIDIA parts worth porting are placement
+and prompt-path work, not new math: #766's expert parts from each member's room (up to 10% more experts on
+the setups it was measured on; this box has 317 MiB free on the second card, about 44 experts), `DS4_AI_RUN`
+(+1.3-4% prefill on 3x V100, same answers), the shallow-ring spec head (+3-7% prefill there, same answers),
+the load interleave (load -31% on a Gorgon Halo, the same on V100) and the 16-token lookup windows (#4040,
++19% on edits in Maya's notes; this branch's cap is 8 rows).  Maya's larger v1.1.61 prefill gains are AMD
+only.  `DS4_AR2`, `AR2_DECODE`, `TP_SHARES` and `ATTN_SPLIT` are measured neutral or worse here.
+
+Maya's own 2080 Ti log (same box, Maya-XS IQ1_S, 80.7 GB CPU lane) reaches 39.5-44.9 decode and 693-730
+prefill, 51.7/982 with cache sub 0.1 and peer AR, with 9-10/10 on its 10-task set; this pack's 2.00 bpw
+CPU lane is 115.5 GB, which is the gap.  A lower-bit or mixed gate/up GSQ-RCO pack is the next real speed
+lever, at a quality cost.  The 30-task cache-sub A/B in the same log is 26/30 off against 27/30 on (one
+regression, two fixes), so 0.1 is not a measured collapse but is still a change of answers.
