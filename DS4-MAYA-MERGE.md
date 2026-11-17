@@ -2069,3 +2069,11 @@ prefill, 51.7/982 with cache sub 0.1 and peer AR, with 9-10/10 on its 10-task se
 CPU lane is 115.5 GB, which is the gap.  A lower-bit or mixed gate/up GSQ-RCO pack is the next real speed
 lever, at a quality cost.  The 30-task cache-sub A/B in the same log is 26/30 off against 27/30 on (one
 regression, two fixes), so 0.1 is not a measured collapse but is still a change of answers.
+
+## 2026-11-17: CPU upgrade (22C/44T) and thread defaults
+
+The host's CPU is now a Xeon E5-2696 v4 (22 cores, 44 threads, 1 NUMA node).  The launchers
+and the GSQ configs no longer pass a fixed CPU-lane thread count: `--cpu-threads 0` is the
+engine's default, one thread a physical core (22 here).  `DS4_CPU_THREADS` still overrides it.
+The 10/16/20-thread measurements earlier in this file are for the old E5-2666 v3 (10C/20T)
+and do not apply to the new CPU.

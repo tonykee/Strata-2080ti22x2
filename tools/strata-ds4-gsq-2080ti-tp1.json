@@ -16,7 +16,7 @@
     "--reserve-mib",
     "768",
     "--cpu-threads",
-    "16",
+    "0",
     "--mmap-experts",
     "off",
     "--experts",
